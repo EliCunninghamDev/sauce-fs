@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(sauce-fs VERSION 0.1.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -25,6 +25,7 @@ find_package(ZLIB REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(xxHash CONFIG REQUIRED)
 find_package(efsw CONFIG REQUIRED)
+find_package(Threads REQUIRED)
 
 # CMake 3.31+ renamed SQLite::SQLite3 to SQLite3::SQLite3.
 if(TARGET SQLite3::SQLite3)
@@ -49,6 +50,52 @@ target_link_libraries(sauce_fs_core PUBLIC
 
 add_executable(sauce-fs src/main.cpp)
 target_link_libraries(sauce-fs PRIVATE sauce_fs_core)
+
+# Archive parsers and indexer: standalone libraries, not linked into sauce-fs.
+add_library(sauce_fs_parsers STATIC
+    src/parsers/bsp.cpp
+    src/parsers/bytes.cpp
+    src/parsers/compression.cpp
+    src/parsers/gameinfo.cpp
+    src/parsers/gma.cpp
+    src/parsers/steam.cpp
+    src/parsers/vdf.cpp
+    src/parsers/vpk.cpp
+)
+target_include_directories(sauce_fs_parsers PUBLIC src)
+target_link_libraries(sauce_fs_parsers PUBLIC
+    LibLZMA::LibLZMA
+    ZLIB::ZLIB
+)
+
+add_library(sauce_fs_index STATIC
+    src/index/archive_index.cpp
+    src/index/thread_pool.cpp
+)
+target_include_directories(sauce_fs_index PUBLIC src)
+target_link_libraries(sauce_fs_index PUBLIC
+    sauce_fs_parsers
+    ${SAUCE_FS_SQLITE}
+    Threads::Threads
+    ZLIB::ZLIB
+    xxHash::xxhash
+)
+
+add_executable(sauce-fs-index src/index/archive_index_cli.cpp)
+target_link_libraries(sauce-fs-index PRIVATE sauce_fs_index)
+
+# Runtime access to the index: providers, merged views, and raw file bytes.
+add_library(sauce_fs_archive STATIC src/index/archive_access.cpp)
+target_include_directories(sauce_fs_archive PUBLIC src)
+target_link_libraries(sauce_fs_archive PUBLIC
+    sauce_fs_parsers
+    ${SAUCE_FS_SQLITE}
+    xxHash::xxhash
+    Threads::Threads
+)
+
+add_executable(sauce-fs-get src/index/archive_get_cli.cpp)
+target_link_libraries(sauce-fs-get PRIVATE sauce_fs_archive)
 
 if(WIN32)
     # WinFsp is not a vcpkg port: it is installed by its own MSI.
@@ -83,6 +130,18 @@ else()
 
     target_sources(sauce-fs PRIVATE src/backends/fuse3.cpp)
     target_link_libraries(sauce-fs PRIVATE PkgConfig::FUSE3)
+
+    # Read-only index mount. Kept separate from sauce-fs and its VFS.
+    add_executable(sauce-fs-mount
+        src/mount/archive_mount.cpp
+        src/mount/archive_mount_cli.cpp
+    )
+    target_include_directories(sauce-fs-mount PRIVATE src)
+    target_link_libraries(sauce-fs-mount PRIVATE
+        sauce_fs_archive
+        PkgConfig::FUSE3
+        Threads::Threads
+    )
 endif()
 
 enable_testing()
