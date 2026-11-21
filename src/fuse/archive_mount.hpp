@@ -4,6 +4,8 @@
 
 #include <filesystem>
 
+#include <sauce/core/log.hpp>
+
 namespace sauce::fs::fuse
 {
 
@@ -20,6 +22,9 @@ struct ArchiveMountOptions
     bool foreground = false;
     /// Ask libfuse for debug logging.
     bool debug = false;
+    /// Diagnostics sink. Empty by default, so mounting embedded in another
+    /// program stays silent unless a callback is installed.
+    core::LogOptions log;
 };
 
 /// Mount the index read-only. The mount root corresponds to `sourcegames`;

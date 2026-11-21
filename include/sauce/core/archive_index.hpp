@@ -11,6 +11,8 @@
 #include <string_view>
 #include <vector>
 
+#include "log.hpp"
+
 namespace sauce::fs::core
 {
 
@@ -128,6 +130,9 @@ struct ArchiveIndexOptions
     std::vector<std::filesystem::path> steam_roots;
     /// SQLite database path. Defaults to the file named "test".
     std::filesystem::path database = "test";
+    /// Diagnostics sink. Empty by default, so the library stays silent unless
+    /// the caller installs a callback.
+    LogOptions log;
 };
 
 struct ArchiveIndexSummary
@@ -174,13 +179,9 @@ struct ArchiveIndexResult
 /// read-only and archives cannot express hard links or renames.
 ///
 /// After the workers join, the rows are written to the SQLite database and a
-/// summary is printed to stdout. Returns false only when the database could not
-/// be written; per-file failures are reported in the summary.
+/// summary is reported through `options.log`. Returns false only when the
+/// database could not be written; per-file failures are reported as warnings.
 bool build_archive_index(const ArchiveIndexOptions& options, ArchiveIndexResult& result);
-
-/// Print the same summary used by build_archive_index().
-void print_archive_index_summary(const ArchiveIndexResult& result,
-                                 const std::filesystem::path& database);
 
 struct ArchiveWatchOptions
 {

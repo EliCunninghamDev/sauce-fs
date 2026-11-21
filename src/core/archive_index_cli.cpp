@@ -4,7 +4,9 @@
 #include <cstdlib>
 #include <string>
 
-#include "core/archive_index.hpp"
+#include <sauce/core/archive_index.hpp>
+
+#include "util/console_log.hpp"
 #include "util/format.hpp"
 
 namespace
@@ -34,6 +36,7 @@ int main(int argc, char** argv)
 {
     sauce::fs::core::ArchiveIndexOptions options;
     sauce::fs::core::ArchiveWatchOptions watch;
+    options.log = sauce::fs::console_log();
     bool watch_mode = false;
 
     for (int index = 1; index < argc; ++index)

@@ -2,8 +2,8 @@
 
 #pragma once
 
-#include "core/archive_discovery.hpp"
-#include "core/archive_index.hpp"
+#include "core/detail/archive_discovery.hpp"
+#include <sauce/core/archive_index.hpp>
 
 namespace sauce::fs::core
 {

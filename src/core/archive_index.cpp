@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-#include "core/archive_index.hpp"
+#include <sauce/core/archive_index.hpp>
 
 #include <algorithm>
 #include <cstdint>
@@ -13,13 +13,14 @@
 #include <utility>
 #include <vector>
 
-#include "core/archive_build.hpp"
-#include "core/archive_constants.hpp"
-#include "core/archive_discovery.hpp"
-#include "core/archive_scan.hpp"
-#include "core/archive_store.hpp"
-#include "core/thread_pool.hpp"
-#include "util/format.hpp"
+#include "core/detail/archive_build.hpp"
+#include "core/detail/archive_constants.hpp"
+#include "core/detail/archive_discovery.hpp"
+#include "core/detail/archive_scan.hpp"
+#include "core/detail/archive_store.hpp"
+#include "core/detail/index_summary.hpp"
+#include "core/detail/log.hpp"
+#include "core/detail/thread_pool.hpp"
 
 namespace sauce::fs::core
 {
@@ -200,39 +201,44 @@ bool build_archive_index(const ArchiveIndexOptions& options, ArchiveIndexResult&
 {
     ScanPlan plan = collect_scan_plan(options);
     const bool written = build_from_plan(options, plan, result);
-    print_archive_index_summary(result, options.database);
+    detail::log_index_summary(options.log, result, options.database);
     return written;
 }
-void print_archive_index_summary(const ArchiveIndexResult& result,
-                                 const std::filesystem::path& database)
-{
-    const ArchiveIndexSummary& summary = result.summary;
-    print("archives: {} (vpk {}, bsp-pak {}, gma {}, gma-bin {})\n", result.archives.size(),
-          summary.vpk, summary.bsp, summary.gma, summary.gma_bin);
-    print("contents: {} files, {} directories\n", result.contents.size() - summary.directories,
-          summary.directories);
-    print("games: {}, gmod crawlers: {}, unreadable: {}\n", result.games.size(),
-          summary.gmod_crawlers, summary.unreadable);
-    print("database: {}\n", database.string());
 
-    if (!summary.warnings.empty())
+namespace detail
+{
+
+void log_index_summary(const LogOptions& log, const ArchiveIndexResult& result,
+                       const std::filesystem::path& database)
+{
+    (void)log;
+    (void)database;
+
+    const ArchiveIndexSummary& summary = result.summary;
+    SAUCE_FS_LOG(log, Info, "archives: {} (vpk {}, bsp-pak {}, gma {}, gma-bin {})",
+                 result.archives.size(), summary.vpk, summary.bsp, summary.gma, summary.gma_bin);
+    SAUCE_FS_LOG(log, Info, "contents: {} files, {} directories",
+                 result.contents.size() - summary.directories, summary.directories);
+    SAUCE_FS_LOG(log, Info, "games: {}, gmod crawlers: {}, unreadable: {}", result.games.size(),
+                 summary.gmod_crawlers, summary.unreadable);
+    SAUCE_FS_LOG(log, Info, "database: {}", database.string());
+
+    const std::size_t limit = std::min(summary.warnings.size(), kPrintedWarnings);
+    for (std::size_t index = 0; index < limit; ++index)
     {
-        print("warnings ({}):\n", summary.warnings.size());
-        const std::size_t limit = std::min(summary.warnings.size(), kPrintedWarnings);
-        for (std::size_t index = 0; index < limit; ++index)
-        {
-            print("  {}\n", summary.warnings[index]);
-        }
-        if (summary.warnings.size() > limit)
-        {
-            print("  ... {} more\n", summary.warnings.size() - limit);
-        }
+        SAUCE_FS_LOG(log, Warning, "{}", summary.warnings[index]);
+    }
+    if (summary.warnings.size() > limit)
+    {
+        SAUCE_FS_LOG(log, Warning, "... {} more warning(s)", summary.warnings.size() - limit);
     }
 
     if (!result.error.empty())
     {
-        print("error: {}\n", result.error);
+        SAUCE_FS_LOG(log, Error, "{}", result.error);
     }
 }
+
+} // namespace detail
 
 } // namespace sauce::fs::core

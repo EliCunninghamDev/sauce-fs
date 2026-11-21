@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-#include "core/archive_index.hpp"
+#include <sauce/core/archive_index.hpp>
 
 namespace sauce::fs::core
 {

@@ -10,10 +10,10 @@
 
 #include <sqlite3.h>
 
-#include "core/archive_access.hpp"
-#include "core/archive_index.hpp"
-#include "core/sqlite_util.hpp"
+#include "core/detail/sqlite_util.hpp"
 #include "util/format.hpp"
+#include <sauce/core/archive_access.hpp>
+#include <sauce/core/archive_index.hpp>
 
 namespace fs = std::filesystem;
 

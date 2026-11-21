@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-#include "core/thread_pool.hpp"
+#include "core/detail/thread_pool.hpp"
 
 #include <utility>
 

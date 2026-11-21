@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-#include "core/archive_discovery.hpp"
+#include "core/detail/archive_discovery.hpp"
 
 #include <algorithm>
 #include <exception>
@@ -12,8 +12,8 @@
 #include <utility>
 #include <vector>
 
-#include "core/archive_constants.hpp"
-#include "core/thread_pool.hpp"
+#include "core/detail/archive_constants.hpp"
+#include "core/detail/thread_pool.hpp"
 #include "parsers/bytes.hpp"
 #include "parsers/gma.hpp"
 #include "parsers/steam.hpp"

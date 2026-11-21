@@ -4,8 +4,8 @@
 #include <memory>
 #include <string>
 
-#include "core/archive_access.hpp"
 #include "util/format.hpp"
+#include <sauce/core/archive_access.hpp>
 
 namespace
 {

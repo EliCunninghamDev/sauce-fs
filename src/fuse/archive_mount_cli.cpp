@@ -6,6 +6,7 @@
 #include <system_error>
 
 #include "fuse/archive_mount.hpp"
+#include "util/console_log.hpp"
 #include "util/format.hpp"
 
 namespace
@@ -50,6 +51,7 @@ void usage(const char* program)
 int main(int argc, char** argv)
 {
     sauce::fs::fuse::ArchiveMountOptions options;
+    options.log = sauce::fs::console_log(sauce::fs::core::LogLevel::Warning);
     std::string mountpoint;
 
     for (int index = 1; index < argc; ++index)

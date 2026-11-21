@@ -10,9 +10,9 @@
 #include <thread>
 #include <vector>
 
-#include "core/archive_access.hpp"
-#include "core/archive_index.hpp"
 #include "util/format.hpp"
+#include <sauce/core/archive_access.hpp>
+#include <sauce/core/archive_index.hpp>
 
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;

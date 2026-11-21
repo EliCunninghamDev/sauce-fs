@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-#include "core/archive_store.hpp"
+#include "core/detail/archive_store.hpp"
 
 #include <filesystem>
 #include <string>
@@ -10,9 +10,9 @@
 
 #include <sqlite3.h>
 
-#include "core/archive_scan.hpp"
-#include "core/archive_sql.hpp"
-#include "core/sqlite_util.hpp"
+#include "core/detail/archive_scan.hpp"
+#include "core/detail/archive_sql.hpp"
+#include "core/detail/sqlite_util.hpp"
 
 namespace sauce::fs::core
 {

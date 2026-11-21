@@ -9,8 +9,10 @@ The project is split into two layers:
 
 - **`core`** — a reusable indexing library (`sauce_fs_core`) that discovers
   installed games, scans archives, writes the SQLite index, watches for
-  changes, and exposes the runtime provider API. Nothing in this layer depends
-  on a mount backend, so it can be embedded in another application.
+  changes, and exposes the runtime provider API. Its public headers live in
+  `include/sauce/core/`, and the build installs it as a CMake package. Nothing
+  in this layer depends on a mount backend, so it can be embedded in another
+  application.
 - **`fuse`** — the filesystem layer (`sauce_fs_fuse`), a read-only FUSE3 mount
   that walks the index through the provider API.
 
@@ -29,7 +31,7 @@ Ported libraries come from [vcpkg](https://github.com/microsoft/vcpkg) via
 | `sqlite3` | Archive index |
 | `xxhash` | XXH3/XXH64 hashing |
 | `efsw` | Filesystem watching |
-| `fmt` | Type-safe formatting for CLI output |
+| `fmt` | Type-safe formatting for CLI output and library diagnostics |
 
 Not from vcpkg:
 
@@ -62,11 +64,42 @@ Targets:
 
 | Target | What it is |
 | --- | --- |
-| `sauce_fs_core` | Reusable indexing library: discovery, scanning, SQLite, providers |
-| `sauce_fs_fuse` | Read-only FUSE frontend over the index providers |
+| `sauce_fs_core` / `sauce::core` | Reusable indexing library: discovery, scanning, SQLite, providers |
+| `sauce_fs_fuse` / `sauce::fuse` | Read-only FUSE frontend over the index providers |
 | `sauce-fs-index` | Archive scanner and indexer |
 | `sauce-fs-get` | Reference consumer: get/list/stat/resolve |
 | `sauce-fs-mount` | Read-only FUSE mount over the index |
+
+### Using the index library
+
+The core installs headers, a static library, and a CMake package:
+
+```sh
+cmake --install build/linux --prefix "$HOME/.local"
+```
+
+```cmake
+find_package(sauce-fs REQUIRED)
+target_link_libraries(my-tool PRIVATE sauce::core)
+```
+
+```cpp
+#include <sauce/core/core.hpp>   // archive_access.hpp, archive_index.hpp, log.hpp
+
+auto database = sauce::fs::core::IndexDatabase::open("index.db");
+```
+
+Only `include/sauce/core/` is public. Parsers, SQL text, SQLite helpers, and
+the watcher implementation stay private to the library target, so the public
+headers depend on nothing beyond the standard library.
+
+Diagnostics never write to stdout or stderr from inside the library. Pass a
+`LogOptions` callback through `ArchiveIndexOptions::log` (or
+`ArchiveMountOptions::log` for the FUSE layer); the bundled CLIs use the
+console sink in `src/util/console_log.hpp`. Formatting is skipped entirely when
+the callback is empty or the message is below the level. Configure with
+`-DSAUCE_FS_LOGGING=OFF` to compile the call sites and their formatting out;
+the `LogOptions` type remains so the API does not change.
 
 ### Quick start
 
@@ -205,7 +238,8 @@ example `half-life-2/maps/c1a0/materials/...` and
 
 ### API
 
-`src/core/archive_access.hpp` exposes a `Provider` with three primitives:
+`include/sauce/core/archive_access.hpp` exposes a `Provider` with three
+primitives:
 
 ```cpp
 Result<NodeInfo> stat(std::string_view path) const;
@@ -276,11 +310,13 @@ the logical file size, `length` the stored byte count, `method` is 0 (stored),
 ```
 CMakeLists.txt            dependency discovery and targets
 CMakePresets.json         vcpkg-based configure/build/test presets
+cmake/                    installed package config and consumer test driver
 justfile                  one-command build, full index, and mount workflow
 vcpkg.json                manifest of ported dependencies
-src/core/                 indexing library: discovery, scanning, SQLite, providers
+include/sauce/core/       public indexing library headers
+src/core/                 indexing library implementation and private headers
 src/fuse/                 read-only FUSE frontend over the core providers
 src/parsers/              VPK, BSP, GMA, Steam, and gameinfo readers
-src/util/format.hpp       fmt wrapper shared by the CLIs and the mount
-tests/                    index watcher and GMA metadata integration tests
+src/util/                 fmt and console logging helpers shared by the CLIs
+tests/                    index watcher, GMA metadata, and package consumption tests
 ```

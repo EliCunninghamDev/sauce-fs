@@ -16,7 +16,7 @@
 #include <string>
 #include <vector>
 
-#include "util/format.hpp"
+#include "core/detail/log.hpp"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -26,7 +26,7 @@
 #include <fuse3/fuse.h>
 #include <xxhash.h>
 
-#include "core/archive_access.hpp"
+#include <sauce/core/archive_access.hpp>
 
 namespace sauce::fs::fuse
 {
@@ -282,13 +282,13 @@ int run_archive_mount(const ArchiveMountOptions& options, const std::filesystem:
     auto database = core::IndexDatabase::open(options.database);
     if (!database)
     {
-        sauce::fs::print_error("sauce-fs-mount: {}\n", database.error().message);
+        SAUCE_FS_LOG(options.log, Error, "{}", database.error().message);
         return 1;
     }
     auto root = (*database)->mount_provider();
     if (!root)
     {
-        sauce::fs::print_error("sauce-fs-mount: {}\n", root.error().message);
+        SAUCE_FS_LOG(options.log, Error, "{}", root.error().message);
         return 1;
     }
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-#include "core/archive_scan.hpp"
+#include "core/detail/archive_scan.hpp"
 
 #include <algorithm>
 #include <cstddef>

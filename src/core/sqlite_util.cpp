@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 
-#include "core/sqlite_util.hpp"
+#include "core/detail/sqlite_util.hpp"
 
 #include <sqlite3.h>
 
-#include "core/archive_sql.hpp"
+#include "core/detail/archive_sql.hpp"
 
 namespace sauce::fs::core::sqlite
 {

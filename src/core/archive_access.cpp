@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-#include "core/archive_access.hpp"
+#include <sauce/core/archive_access.hpp>
 
 #include <algorithm>
 #include <cstddef>
@@ -15,9 +15,9 @@
 #include <fmt/format.h>
 #include <sqlite3.h>
 
-#include "core/archive_constants.hpp"
-#include "core/archive_sql.hpp"
-#include "core/sqlite_util.hpp"
+#include "core/detail/archive_constants.hpp"
+#include "core/detail/archive_sql.hpp"
+#include "core/detail/sqlite_util.hpp"
 #include "parsers/bytes.hpp"
 #include "parsers/compression.hpp"
 #include "parsers/gma.hpp"

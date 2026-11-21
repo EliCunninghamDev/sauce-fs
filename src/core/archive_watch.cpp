@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: MIT
 
-#include "core/archive_index.hpp"
+#include <sauce/core/archive_index.hpp>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
-#include <cstdio>
 #include <exception>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <set>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -22,19 +22,43 @@
 
 #include <efsw/efsw.hpp>
 
-#include "core/archive_build.hpp"
-#include "core/archive_constants.hpp"
-#include "core/archive_discovery.hpp"
-#include "core/archive_scan.hpp"
-#include "core/archive_store.hpp"
-#include "core/thread_pool.hpp"
+#include "core/detail/archive_build.hpp"
+#include "core/detail/archive_constants.hpp"
+#include "core/detail/archive_discovery.hpp"
+#include "core/detail/archive_scan.hpp"
+#include "core/detail/archive_store.hpp"
+#include "core/detail/index_summary.hpp"
+#include "core/detail/log.hpp"
+#include "core/detail/thread_pool.hpp"
 #include "parsers/vpk.hpp"
-#include "util/format.hpp"
 
 namespace sauce::fs::core
 {
 
 namespace fs = std::filesystem;
+
+namespace
+{
+
+constexpr std::size_t kListedPaths = 5;
+
+void log_paths(const LogOptions& log, std::string_view label, const std::vector<std::string>& paths)
+{
+    (void)log;
+    (void)label;
+
+    const std::size_t limit = std::min<std::size_t>(paths.size(), kListedPaths);
+    for (std::size_t index = 0; index < limit; ++index)
+    {
+        SAUCE_FS_LOG(log, Info, "  {} {}", label, paths[index]);
+    }
+    if (paths.size() > limit)
+    {
+        SAUCE_FS_LOG(log, Info, "  {} ... {} more", label, paths.size() - limit);
+    }
+}
+
+} // namespace
 
 struct ArchiveIndexWatcher::Impl final : private efsw::FileWatchListener
 {
@@ -57,7 +81,7 @@ struct ArchiveIndexWatcher::Impl final : private efsw::FileWatchListener
         ScanPlan plan = collect_scan_plan(options_);
         const std::vector<fs::path> roots = plan.watch_roots;
         const bool built = build_from_plan(options_, plan, result);
-        print_archive_index_summary(result, options_.database);
+        detail::log_index_summary(options_.log, result, options_.database);
         if (!built)
         {
             return false;
@@ -73,7 +97,7 @@ struct ArchiveIndexWatcher::Impl final : private efsw::FileWatchListener
             const efsw::WatchID id = watcher_.addWatch(root.string(), this, true);
             if (id < 0)
             {
-                print("warning: cannot watch {}\n", root.string());
+                SAUCE_FS_LOG(options_.log, Warning, "cannot watch {}", root.string());
                 continue;
             }
             watch_ids_.push_back(id);
@@ -86,13 +110,13 @@ struct ArchiveIndexWatcher::Impl final : private efsw::FileWatchListener
             std::string error;
             if (!refresh(result, {}, {}, false, error))
             {
-                print("error: {}\n", error);
+                SAUCE_FS_LOG(options_.log, Error, "{}", error);
                 return false;
             }
         }
 
-        print("watching {} root(s); press Ctrl+C to stop\n", watch_ids_.size());
-        std::fflush(stdout);
+        SAUCE_FS_LOG(options_.log, Info, "watching {} root(s); press Ctrl+C to stop",
+                     watch_ids_.size());
 
         for (;;)
         {
@@ -139,8 +163,7 @@ struct ArchiveIndexWatcher::Impl final : private efsw::FileWatchListener
             std::string error;
             if (!refresh(result, dirty, reparse, missed, error))
             {
-                print("error: {}\n", error);
-                std::fflush(stdout);
+                SAUCE_FS_LOG(options_.log, Error, "{}", error);
                 return false;
             }
         }
@@ -424,33 +447,22 @@ private:
         if (watch_.verbose && (!added.empty() || !changed.empty() || !delta.removed.empty() ||
                                !failed.empty() || !parse_warnings.empty()))
         {
-            print("index updated: +{} added, -{} removed, ~{} changed\n", added.size(),
-                  delta.removed.size(), changed.size());
-            const auto print_paths = [](const char* label, const std::vector<std::string>& paths)
-            {
-                const std::size_t limit = std::min<std::size_t>(paths.size(), 5);
-                for (std::size_t index = 0; index < limit; ++index)
-                {
-                    print("  {} {}\n", label, paths[index]);
-                }
-                if (paths.size() > limit)
-                {
-                    print("  {} ... {} more\n", label, paths.size() - limit);
-                }
-            };
-            print_paths("+", added);
-            print_paths("~", changed);
-            print_paths("-", delta.removed);
+            SAUCE_FS_LOG(options_.log, Info, "index updated: +{} added, -{} removed, ~{} changed",
+                         added.size(), delta.removed.size(), changed.size());
+            log_paths(options_.log, "+", added);
+            log_paths(options_.log, "~", changed);
+            log_paths(options_.log, "-", delta.removed);
             for (const std::string& path : failed)
             {
-                print("  ! {} (unreadable; kept previous index rows)\n", path);
+                (void)path;
+                SAUCE_FS_LOG(options_.log, Warning, "{} (unreadable; kept previous index rows)",
+                             path);
             }
             const std::size_t warning_limit = std::min<std::size_t>(parse_warnings.size(), 5);
             for (std::size_t index = 0; index < warning_limit; ++index)
             {
-                print("  warning: {}\n", parse_warnings[index]);
+                SAUCE_FS_LOG(options_.log, Warning, "{}", parse_warnings[index]);
             }
-            std::fflush(stdout);
         }
         return true;
     }
