@@ -29,6 +29,18 @@ build:
     cmake --preset linux
     cmake --build --preset linux
 
+# Build the Doxygen/Breathe/Sphinx site into build/docs/html.
+#
+# Needs doxygen (pacman -S doxygen) plus the Python requirements, either active
+# on PATH or installed into build/docs-venv.
+docs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sphinx="$(command -v sphinx-build || echo "{{ root }}/build/docs-venv/bin/sphinx-build")"
+    cmake -S docs -B build/docs -DSPHINX_EXECUTABLE="$sphinx"
+    cmake --build build/docs --target docs
+    echo "documentation: {{ root }}/build/docs/html/index.html"
+
 # Build a full index, keep it fresh with the watcher, and mount it.
 up: stop build
     @just _ensure-mountpoint

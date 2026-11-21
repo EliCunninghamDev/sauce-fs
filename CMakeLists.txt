@@ -54,6 +54,10 @@ endif()
 # LogOptions::enabled() the same way as the library.
 option(SAUCE_FS_LOGGING "Compile diagnostics into the libraries" ON)
 
+# Doxygen and the Sphinx requirements are not part of the C++ build, so the
+# docs target is opt-in. docs/ is also a standalone CMake project for CI.
+option(SAUCE_FS_BUILD_DOCS "Add the Doxygen/Sphinx documentation target" OFF)
+
 # Indexing core: reusable discovery, scanning, SQLite storage, watch mode, and
 # the runtime provider API. The archive format readers are an implementation
 # detail, so their sources are compiled into the same target; that keeps the
@@ -197,3 +201,7 @@ install(
         ${CMAKE_CURRENT_BINARY_DIR}/sauce-fs-config-version.cmake
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/sauce-fs
 )
+
+if(SAUCE_FS_BUILD_DOCS)
+    add_subdirectory(docs)
+endif()

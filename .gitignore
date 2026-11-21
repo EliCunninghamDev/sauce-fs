@@ -4,5 +4,7 @@ compile_commands.json
 .cache/
 .vscode/
 .idea/
+.venv/
+docs/_build/
 *.swp
 .DS_Store

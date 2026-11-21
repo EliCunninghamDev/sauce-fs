@@ -189,7 +189,7 @@ struct ArchiveWatchOptions
     /// rescanned. A burst of writes (a game update replacing a VPK tree)
     /// therefore produces one update instead of one per file.
     std::chrono::milliseconds debounce{500};
-    /// Print a line for each archive added, removed, or changed.
+    /// Emit an Info message for each archive added, removed, or changed.
     bool verbose = true;
 };
 
@@ -213,7 +213,7 @@ public:
     /// Returns false only when the initial build or an incremental database
     /// update fails; individual archive failures are reported as warnings.
     /// `result` holds the initial full snapshot; later updates are applied
-    /// directly to the database and summarized on stdout.
+    /// directly to the database and summarized through the log callback.
     bool run(ArchiveIndexResult& result);
 
     /// Ask a running run() call to return. Safe to call from another thread.

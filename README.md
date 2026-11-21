@@ -293,6 +293,29 @@ the logical file size, `length` the stored byte count, `method` is 0 (stored),
 8 (DEFLATE), or 14 (LZMA), and `assettype` is one of `Unknown`, `Model`,
 `Material`, `Texture`, `Sound`, `Map`, `Script`.
 
+## Documentation
+
+The API reference and guide are built with Doxygen, Breathe, and Sphinx:
+
+```sh
+python3 -m venv build/docs-venv
+build/docs-venv/bin/pip install -r docs/requirements.txt
+just docs        # needs doxygen; uses sphinx-build from PATH or the venv
+```
+
+The site is written to `build/docs/html/index.html`. `docs/` is also a
+standalone CMake project, so CI can build it without the vcpkg toolchain:
+
+```sh
+cmake -S docs -B build/docs -DSPHINX_EXECUTABLE="$PWD/build/docs-venv/bin/sphinx-build"
+cmake --build build/docs --target docs
+```
+
+Every push to `main` builds the same site in GitHub Actions and publishes it to
+<https://elicunninghamdev.github.io/sauce-fs/>. The job lives in
+`.github/workflows/docs.yml`; select "GitHub Actions" as the Pages source once
+in the repository settings.
+
 ## Limitations
 
 - The mount is Linux/FUSE3 only; `sauce_fs_core` itself is portable.
@@ -311,7 +334,8 @@ the logical file size, `length` the stored byte count, `method` is 0 (stored),
 CMakeLists.txt            dependency discovery and targets
 CMakePresets.json         vcpkg-based configure/build/test presets
 cmake/                    installed package config and consumer test driver
-justfile                  one-command build, full index, and mount workflow
+docs/                     Doxygen/Breathe/Sphinx guide and API reference
+justfile                  one-command build, index, mount, and docs workflow
 vcpkg.json                manifest of ported dependencies
 include/sauce/core/       public indexing library headers
 src/core/                 indexing library implementation and private headers
@@ -319,4 +343,5 @@ src/fuse/                 read-only FUSE frontend over the core providers
 src/parsers/              VPK, BSP, GMA, Steam, and gameinfo readers
 src/util/                 fmt and console logging helpers shared by the CLIs
 tests/                    index watcher, GMA metadata, and package consumption tests
+.github/workflows/        GitHub Pages documentation build
 ```
