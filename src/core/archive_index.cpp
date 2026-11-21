@@ -39,6 +39,18 @@ bool build_from_plan(const ArchiveIndexOptions& options, ScanPlan& plan, Archive
     result.summary.warnings = std::move(plan.warnings);
     result.summary.game_folders = result.games.size();
     result.summary.gmod_crawlers = plan.gmod_crawlers;
+    result.loose = std::move(plan.loose);
+    for (const LooseEntry& entry : result.loose)
+    {
+        if (entry.directory)
+        {
+            ++result.summary.loose_directories;
+        }
+        else
+        {
+            ++result.summary.loose_files;
+        }
+    }
 
     std::vector<Candidate> candidates = std::move(plan.candidates);
     if (!candidates.empty())
@@ -140,7 +152,7 @@ bool build_from_plan(const ArchiveIndexOptions& options, ScanPlan& plan, Archive
     }
 
     return write_database(options.database, result.games, result.archives, result.contents,
-                          result.error);
+                          result.loose, result.error);
 } // namespace
 
 std::string_view archive_variant_name(ArchiveVariant variant) noexcept
@@ -219,6 +231,8 @@ void log_index_summary(const LogOptions& log, const ArchiveIndexResult& result,
                  result.archives.size(), summary.vpk, summary.bsp, summary.gma, summary.gma_bin);
     SAUCE_FS_LOG(log, Info, "contents: {} files, {} directories",
                  result.contents.size() - summary.directories, summary.directories);
+    SAUCE_FS_LOG(log, Info, "loose: {} files, {} directories", summary.loose_files,
+                 summary.loose_directories);
     SAUCE_FS_LOG(log, Info, "games: {}, gmod crawlers: {}, unreadable: {}", result.games.size(),
                  summary.gmod_crawlers, summary.unreadable);
     SAUCE_FS_LOG(log, Info, "database: {}", database.string());

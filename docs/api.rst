@@ -43,6 +43,11 @@ Providers
 .. doxygenclass:: sauce::fs::core::ArchiveProvider
    :members:
 
+.. doxygenclass:: sauce::fs::core::LooseFileProvider
+   :members:
+
+.. doxygenenum:: sauce::fs::core::GameOrder
+
 Index database
 --------------
 
@@ -57,6 +62,15 @@ Building an index
 .. doxygenenum:: sauce::fs::core::AssetType
 
 .. doxygenstruct:: sauce::fs::core::GameRecord
+   :members:
+
+.. doxygenstruct:: sauce::fs::core::GameSearchPath
+   :members:
+
+.. doxygenstruct:: sauce::fs::core::GameMount
+   :members:
+
+.. doxygenstruct:: sauce::fs::core::LooseEntry
    :members:
 
 .. doxygenstruct:: sauce::fs::core::ArchiveRecord

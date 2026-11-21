@@ -42,7 +42,7 @@ bool has_extension(std::string_view path, std::initializer_list<std::string_view
 }
 
 /// Asset type is a coarse classification of the path's extension.
-AssetType classify_asset_type(std::string_view path)
+AssetType classify_asset_type_impl(std::string_view path)
 {
     if (has_extension(path, {".mdl", ".vvd", ".vtx", ".phy", ".ani", ".vta"}))
     {
@@ -116,7 +116,7 @@ void append_entry_paths(std::string_view archive_path, ArchiveVariant variant,
         content.method = entry.method;
         content.preload_offset = entry.preload_offset;
         content.preload_length = entry.preload_length;
-        content.asset_type = classify_asset_type(content.path);
+        content.asset_type = classify_asset_type_impl(content.path);
         contents.push_back(std::move(content));
     }
 
@@ -132,6 +132,11 @@ void append_entry_paths(std::string_view archive_path, ArchiveVariant variant,
 
 /// Parse only the container's directory/index; entry payloads are never read.
 } // namespace
+
+AssetType classify_asset_type(std::string_view path) noexcept
+{
+    return classify_asset_type_impl(path);
+}
 
 bool compute_hash(const fs::path& path, std::uint64_t& hash, std::string& error)
 {

@@ -43,16 +43,25 @@ struct DatabaseDelta
     /// the archive row's metadata changed.
     std::unordered_map<std::string, std::vector<ArchiveContent>> replaced;
     std::vector<std::string> removed;
+    /// Loose rows to insert or refresh.
+    std::vector<LooseEntry> loose;
+    /// Loose rows keyed as "root\ncase-folded path" to delete.
+    std::vector<std::string> loose_removed;
 };
 
 /// Replace the database with a full scan result.
 bool write_database(const std::filesystem::path& database, const std::vector<GameRecord>& games,
                     const std::vector<ArchiveRecord>& archives,
-                    const std::vector<ArchiveContent>& contents, std::string& error);
+                    const std::vector<ArchiveContent>& contents,
+                    const std::vector<LooseEntry>& loose, std::string& error);
 
 /// Load the current `archives` rows keyed by on-disk path.
 bool read_archive_rows(const std::filesystem::path& database,
                        std::unordered_map<std::string, StoredArchive>& rows, std::string& error);
+
+/// Load loose rows keyed as "root\ncase-folded path".
+bool read_loose_rows(const std::filesystem::path& database,
+                     std::unordered_map<std::string, LooseEntry>& rows, std::string& error);
 
 /// Apply an incremental update in a single transaction.
 bool apply_database_delta(const std::filesystem::path& database, const DatabaseDelta& delta,

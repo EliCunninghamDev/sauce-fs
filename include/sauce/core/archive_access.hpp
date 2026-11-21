@@ -207,6 +207,21 @@ public:
 using ProviderPtr = std::shared_ptr<const Provider>;
 
 class ArchiveProvider;
+class LooseFileProvider;
+
+/// \brief Ordering policy used by ordered_game_provider().
+enum class GameOrder : std::uint8_t
+{
+    /// \brief Garry's Mod rules for Garry's Mod, engine search paths
+    /// otherwise, and index order when neither is available.
+    Auto,
+    /// \brief Source engine `SearchPaths` order from gameinfo.
+    Engine,
+    /// \brief Garry's Mod addon and mounted-game order.
+    GarrysMod,
+    /// \brief Index insertion order; loose files are placed on top.
+    Index,
+};
 
 /// \brief Read-only access to an index database.
 ///
@@ -218,6 +233,35 @@ public:
     /// \brief One installed game as recorded in the index.
     struct GameInfo
     {
+        /// \brief One parsed gameinfo `SearchPaths` entry.
+        struct SearchPath
+        {
+            /// \brief Access flags, for example "game+mod".
+            std::string types;
+
+            /// \brief Raw path text from gameinfo.
+            std::string path;
+
+            /// \brief Absolute resolved path, or empty when missing.
+            std::string resolved;
+
+            /// \brief "dir", "vpk", "file", or "missing".
+            std::string kind;
+        };
+
+        /// \brief One game root mounted through Garry's Mod.
+        struct Mount
+        {
+            /// \brief Key from `cfg/mount.cfg`.
+            std::string name;
+
+            /// \brief Absolute mounted content root.
+            std::string path;
+
+            /// \brief Configuration file that declared the mount.
+            std::string source;
+        };
+
         /// \brief Database row identifier.
         std::int64_t id = 0;
 
@@ -229,6 +273,18 @@ public:
 
         /// \brief Absolute content root, the directory containing gameinfo.txt.
         std::string game_path;
+
+        /// \brief Absolute gameinfo path, or empty when absent.
+        std::string gameinfo;
+
+        /// \brief Whether this game uses Garry's Mod addon mounting rules.
+        bool garrys_mod = false;
+
+        /// \brief Engine search paths in gameinfo order.
+        std::vector<SearchPath> search_paths;
+
+        /// \brief Garry's Mod `cfg/mount.cfg` entries in file order.
+        std::vector<Mount> mounts;
     };
 
     /// \brief One archive as recorded in the index.
@@ -312,8 +368,9 @@ public:
 
     /// \brief Build a merged view of one game.
     ///
-    /// \details Layers are tried in order; the first layer that has a path
-    /// wins, and Provider::list() unions the layers.
+    /// \details Loose files below the game root are placed above the archive
+    /// layers. Archive layers are tried in order; the first layer that has a
+    /// path wins, and Provider::list() unions the layers.
     ///
     /// \param slug GameInfo::slug of the game to open.
     /// \param archive_order Archive identifiers in precedence order; an empty
@@ -322,7 +379,51 @@ public:
     Result<ProviderPtr> game_provider(std::string_view slug,
                                       std::span<const std::int64_t> archive_order = {}) const;
 
+    /// \brief Build a merged view using the Source engine's gameinfo order.
+    ///
+    /// \details Each search path becomes one layer, in file order. Directory
+    /// entries contribute loose files; VPK entries contribute the matching
+    /// archive. Map pakfiles are appended as the lowest-precedence layers
+    /// because they are scoped to one map.
+    ///
+    /// \param slug GameInfo::slug of the game to open.
+    /// \return Provider whose paths are game-internal.
+    /// \retval ErrorCode::NotFound when no game has that slug.
+    Result<ProviderPtr> engine_game_provider(std::string_view slug) const;
+
+    /// \brief Build a merged view using Garry's Mod's mount rules.
+    ///
+    /// \details Workshop addons override local addons, local addons override
+    /// engine content, and `cfg/mount.cfg` games sit below Garry's Mod's own
+    /// content. Addon archives are ordered by mount path, with later names
+    /// winning, matching Garry's Mod's alphabetical addon order.
+    ///
+    /// \param slug GameInfo::slug of the game to open.
+    /// \return Provider whose paths are game-internal.
+    /// \retval ErrorCode::NotFound when no game has that slug.
+    Result<ProviderPtr> garrysmod_game_provider(std::string_view slug) const;
+
+    /// \brief Build a merged view with an explicit ordering policy.
+    ///
+    /// \param slug GameInfo::slug of the game to open.
+    /// \param order Ordering policy; GameOrder::Auto selects Garry's Mod rules
+    /// for a Garry's Mod index row, engine search paths otherwise.
+    /// \return Provider whose paths are game-internal.
+    Result<ProviderPtr> ordered_game_provider(std::string_view slug, GameOrder order) const;
+
+    /// \brief Build a provider over loose files below \p root.
+    ///
+    /// \param root Absolute content root recorded as LooseEntry::root.
+    /// \param prefix Optional path below \p root to scope the provider to.
+    /// \return Provider whose paths are relative to the prefix.
+    Result<ProviderPtr> loose_provider(std::filesystem::path root,
+                                       std::string_view prefix = {}) const;
+
     /// \brief Build the per-archive tree exposed by the FUSE mount.
+    ///
+    /// \details Each game directory contains both the archive trees and the
+    /// loose files recorded below the game root. Loose files win when a loose
+    /// path collides with an archive mount directory.
     ///
     /// \return Provider rooted at the equivalent of `sourcegames`, with paths
     /// of the form "game/archive-mount-path/internal/path".
@@ -345,7 +446,13 @@ private:
                                                      std::string_view parent) const;
     Result<Blob> entry_blob(std::int64_t archive_id, std::string_view path) const;
 
+    Result<NodeInfo> loose_stat(std::string_view root, std::string_view key) const;
+    Result<std::vector<DirectoryEntry>> loose_list(std::string_view root,
+                                                   std::string_view parent_key) const;
+    Result<Blob> loose_blob(std::string_view root, std::string_view key) const;
+
     friend class ArchiveProvider;
+    friend class LooseFileProvider;
 };
 
 /// \brief One archive exposed as a read-only Provider.
@@ -372,6 +479,37 @@ public:
 private:
     std::shared_ptr<const IndexDatabase> database_;
     std::int64_t archive_id_ = 0;
+};
+
+/// \brief Loose files below one indexed content root.
+///
+/// \details Paths are relative to the provider's prefix. Listings come from the
+/// index; file bytes are read from disk on demand, so edits made while a mount
+/// is live are visible without reindexing.
+class LooseFileProvider final : public Provider
+{
+public:
+    /// \brief Bind a provider to loose files below \p root.
+    ///
+    /// \param database Open index database that owns the rows.
+    /// \param root Absolute content root to serve.
+    /// \param prefix Optional path below \p root used as this provider's root.
+    LooseFileProvider(std::shared_ptr<const IndexDatabase> database, std::string root,
+                      std::string prefix = {});
+
+    /// \copydoc Provider::stat
+    Result<NodeInfo> stat(std::string_view path) const override;
+
+    /// \copydoc Provider::list
+    Result<std::vector<DirectoryEntry>> list(std::string_view path) const override;
+
+    /// \copydoc Provider::get
+    Result<Blob> get(std::string_view path) const override;
+
+private:
+    std::shared_ptr<const IndexDatabase> database_;
+    std::string root_;
+    std::string prefix_key_;
 };
 
 /// \brief Overlay provider that merges several layers by precedence.

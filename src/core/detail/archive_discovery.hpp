@@ -30,6 +30,7 @@ struct ScanPlan
 {
     std::vector<GameRecord> games;
     std::vector<Candidate> candidates;
+    std::vector<LooseEntry> loose;
     std::vector<std::string> warnings;
     std::vector<std::filesystem::path> watch_roots;
     std::size_t gmod_crawlers = 0;

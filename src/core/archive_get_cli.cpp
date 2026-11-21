@@ -17,13 +17,14 @@ void usage(const char* program)
         "\n"
         "  --database PATH   SQLite index produced by sauce-fs-index\n"
         "  --game SLUG       Query a merged game view instead of the per-archive view\n"
+        "  --order MODE      auto, engine, garrysmod, or index (default: auto)\n"
         "  --list            List a directory\n"
         "  --stat            Show entry kind and size\n"
         "  --resolve         Use Provider::resolve (raw pointer) instead of get\n"
         "  -h, --help        Show this message\n"
         "\n"
         "Without --list or --stat, writes the file bytes to stdout.\n"
-        "Paths in the default view are: game/archive-mount-path/internal/path\n"
+        "Paths in the default view are: game/path (archives and loose files)\n"
         "With --game, paths are relative to that game: internal/path\n",
         program);
 }
@@ -40,6 +41,7 @@ int main(int argc, char** argv)
 {
     std::string database = "test";
     std::string game;
+    std::string order;
     std::string path;
     bool list = false;
     bool stat = false;
@@ -78,6 +80,16 @@ int main(int argc, char** argv)
             list = true;
             continue;
         }
+        if (argument == "--order")
+        {
+            if (index + 1 >= argc)
+            {
+                sauce::fs::print_error("{}: --order needs a mode\n", argv[0]);
+                return 2;
+            }
+            order = argv[++index];
+            continue;
+        }
         if (argument == "--stat")
         {
             stat = true;
@@ -108,6 +120,33 @@ int main(int argc, char** argv)
                                argv[0]);
         return 2;
     }
+
+    sauce::fs::core::GameOrder policy = sauce::fs::core::GameOrder::Auto;
+    if (!order.empty())
+    {
+        if (order == "auto")
+        {
+            policy = sauce::fs::core::GameOrder::Auto;
+        }
+        else if (order == "engine")
+        {
+            policy = sauce::fs::core::GameOrder::Engine;
+        }
+        else if (order == "garrysmod" || order == "gmod")
+        {
+            policy = sauce::fs::core::GameOrder::GarrysMod;
+        }
+        else if (order == "index")
+        {
+            policy = sauce::fs::core::GameOrder::Index;
+        }
+        else
+        {
+            sauce::fs::print_error("{}: unknown order: {}\n", argv[0], order);
+            return 2;
+        }
+    }
+
     if (path.empty())
     {
         path = "/";
@@ -120,7 +159,8 @@ int main(int argc, char** argv)
     }
     const std::shared_ptr<sauce::fs::core::IndexDatabase> index = *opened;
 
-    auto provider = game.empty() ? index->mount_provider() : index->game_provider(game);
+    auto provider =
+        game.empty() ? index->mount_provider() : index->ordered_game_provider(game, policy);
     if (!provider)
     {
         return fail(provider.error());

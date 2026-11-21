@@ -13,6 +13,8 @@
 #include <vector>
 
 #include "core/detail/archive_constants.hpp"
+#include "core/detail/archive_scan.hpp"
+#include "core/detail/search_paths.hpp"
 #include "core/detail/thread_pool.hpp"
 #include "parsers/bytes.hpp"
 #include "parsers/gma.hpp"
@@ -33,6 +35,9 @@ struct GameFolder
     std::string title;
     std::string slug;
     bool garrys_mod = false;
+    fs::path gameinfo;
+    std::vector<GameSearchPath> search_paths;
+    std::vector<GameMount> mounts;
 };
 
 struct ScanJob
@@ -47,6 +52,7 @@ struct ScanJob
 struct JobResult
 {
     std::vector<Candidate> candidates;
+    std::vector<LooseEntry> loose;
     std::vector<std::string> warnings;
 };
 
@@ -209,7 +215,18 @@ std::vector<GameFolder> collect_game_folders(const ArchiveIndexOptions& options,
             {
                 title = path.generic_string();
             }
-            folders.push_back({path, std::move(title), {}, is_gmod_folder(path)});
+            GameFolder entry;
+            entry.path = path;
+            entry.title = std::move(title);
+            entry.garrys_mod = is_gmod_folder(path);
+            const fs::path content = entry.garrys_mod ? gmod_content_folder(path) : path;
+            entry.gameinfo = find_gameinfo(content);
+            entry.search_paths = load_search_paths(content, entry.gameinfo, warnings);
+            if (entry.garrys_mod)
+            {
+                entry.mounts = load_game_mounts(content, warnings);
+            }
+            folders.push_back(std::move(entry));
         }
     }
     else
@@ -236,7 +253,18 @@ std::vector<GameFolder> collect_game_folders(const ArchiveIndexOptions& options,
             {
                 display = path.filename().string();
             }
-            folders.push_back({path, std::move(display), {}, gmod});
+            GameFolder entry;
+            entry.path = path;
+            entry.title = std::move(display);
+            entry.garrys_mod = gmod;
+            const fs::path content = entry.garrys_mod ? gmod_content_folder(path) : path;
+            entry.gameinfo = find_gameinfo(content);
+            entry.search_paths = load_search_paths(content, entry.gameinfo, warnings);
+            if (entry.garrys_mod)
+            {
+                entry.mounts = load_game_mounts(content, warnings);
+            }
+            folders.push_back(std::move(entry));
         }
     }
 
@@ -337,6 +365,54 @@ void add_candidate(const fs::path& path, ArchiveVariant variant, const fs::path&
     result.candidates.push_back(std::move(candidate));
 }
 
+/// Path below `game_path` for a file below `root`.
+std::string loose_relative_path(const fs::path& path, const fs::path& root,
+                                const std::string& mount_prefix)
+{
+    fs::path relative = path.lexically_relative(root);
+    if (relative.empty() || relative == ".")
+    {
+        return {};
+    }
+    if (!mount_prefix.empty())
+    {
+        relative = fs::path(mount_prefix) / relative;
+    }
+    return relative.generic_string();
+}
+
+bool is_archive_container(std::string_view name)
+{
+    return parsers::ends_with_ci(name, constants::kVpkExtension) ||
+           parsers::ends_with_ci(name, constants::kBspExtension) ||
+           parsers::ends_with_ci(name, constants::kGmaExtension) ||
+           parsers::is_legacy_bin_name(name);
+}
+
+void add_loose_entry(const fs::path& path, bool directory, const fs::path& game_path,
+                     const fs::path& root, const std::string& mount_prefix, JobResult& result)
+{
+    const std::string relative = loose_relative_path(path, root, mount_prefix);
+    if (relative.empty())
+    {
+        return;
+    }
+
+    LooseEntry entry;
+    entry.root = game_path.generic_string();
+    entry.path = relative;
+    const fs::path logical(relative);
+    entry.parent = logical.parent_path().generic_string();
+    entry.name = logical.filename().string();
+    entry.directory = directory;
+    if (!directory)
+    {
+        fill_signature(path, entry.size, entry.modified);
+        entry.asset_type = classify_asset_type(relative);
+    }
+    result.loose.push_back(std::move(entry));
+}
+
 bool is_vpk_directory_file(const fs::path& path, const std::string& name)
 {
     if (!parsers::ends_with_ci(name, constants::kVpkExtension) || parsers::is_vpk_chunk_name(name))
@@ -390,6 +466,20 @@ void scan_root(const fs::path& root, const fs::path& game_path, const std::strin
         }
 
         std::error_code type_error;
+        const bool directory = iterator->is_directory(type_error);
+        if (!type_error && directory)
+        {
+            if (parsers::ascii_iequals(name, "bin") || parsers::ascii_iequals(name, "linux64") ||
+                parsers::ascii_iequals(name, "win64") || parsers::ascii_iequals(name, "win32"))
+            {
+                iterator.disable_recursion_pending();
+                continue;
+            }
+            add_loose_entry(path, true, game_path, root, mount_prefix, result);
+            continue;
+        }
+
+        type_error.clear();
         if (!iterator->is_regular_file(type_error) || type_error)
         {
             continue;
@@ -405,6 +495,10 @@ void scan_root(const fs::path& root, const fs::path& game_path, const std::strin
             {
                 add_candidate(path, ArchiveVariant::GmaBin, game_path, root, mount_prefix, result);
             }
+            else if (!is_archive_container(name))
+            {
+                add_loose_entry(path, false, game_path, root, mount_prefix, result);
+            }
             continue;
         }
 
@@ -415,6 +509,10 @@ void scan_root(const fs::path& root, const fs::path& game_path, const std::strin
         else if (parsers::ends_with_ci(name, constants::kBspExtension))
         {
             add_candidate(path, ArchiveVariant::Bsp, game_path, root, mount_prefix, result);
+        }
+        else if (!is_archive_container(name))
+        {
+            add_loose_entry(path, false, game_path, root, mount_prefix, result);
         }
     }
 }
@@ -454,7 +552,15 @@ ScanPlan collect_scan_plan(const ArchiveIndexOptions& options)
     const std::vector<GameFolder> folders = collect_game_folders(options, plan.warnings);
     for (const GameFolder& folder : folders)
     {
-        plan.games.push_back(GameRecord{folder.slug, folder.title, folder.path.generic_string()});
+        GameRecord game;
+        game.slug = folder.slug;
+        game.title = folder.title;
+        game.game_path = folder.path.generic_string();
+        game.gameinfo = folder.gameinfo.generic_string();
+        game.garrys_mod = folder.garrys_mod;
+        game.search_paths = folder.search_paths;
+        game.mounts = folder.mounts;
+        plan.games.push_back(std::move(game));
         plan.watch_roots.push_back(folder.path);
     }
     std::sort(plan.games.begin(), plan.games.end(),
@@ -509,6 +615,8 @@ ScanPlan collect_scan_plan(const ArchiveIndexOptions& options)
         plan.candidates.insert(plan.candidates.end(),
                                std::make_move_iterator(job_result.candidates.begin()),
                                std::make_move_iterator(job_result.candidates.end()));
+        plan.loose.insert(plan.loose.end(), std::make_move_iterator(job_result.loose.begin()),
+                          std::make_move_iterator(job_result.loose.end()));
         plan.warnings.insert(plan.warnings.end(),
                              std::make_move_iterator(job_result.warnings.begin()),
                              std::make_move_iterator(job_result.warnings.end()));
@@ -531,6 +639,40 @@ ScanPlan collect_scan_plan(const ArchiveIndexOptions& options)
         }
     }
     plan.candidates = std::move(unique);
+
+    // Loose rows are keyed by (root, case-folded path). Overlapping scan roots
+    // can visit the same path twice, and a path can be both a file and a
+    // directory on case-insensitive filesystems; keep the file row.
+    std::sort(plan.loose.begin(), plan.loose.end(),
+              [](const LooseEntry& left, const LooseEntry& right)
+              {
+                  if (left.root != right.root)
+                  {
+                      return left.root < right.root;
+                  }
+                  if (left.path != right.path)
+                  {
+                      return left.path < right.path;
+                  }
+                  return left.directory < right.directory;
+              });
+    std::vector<LooseEntry> unique_loose;
+    unique_loose.reserve(plan.loose.size());
+    std::set<std::string> loose_keys;
+    for (LooseEntry& entry : plan.loose)
+    {
+        std::string key = entry.root;
+        key.push_back('\n');
+        for (const char character : entry.path)
+        {
+            key.push_back(parsers::ascii_lower(character));
+        }
+        if (loose_keys.insert(std::move(key)).second)
+        {
+            unique_loose.push_back(std::move(entry));
+        }
+    }
+    plan.loose = std::move(unique_loose);
 
     // Mount directory names must be unique per game. Two archives can share a
     // stem (`foo_dir.vpk` and `foo.bsp`), so disambiguate rather than fail the

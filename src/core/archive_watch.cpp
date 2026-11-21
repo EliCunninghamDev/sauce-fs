@@ -30,6 +30,7 @@
 #include "core/detail/index_summary.hpp"
 #include "core/detail/log.hpp"
 #include "core/detail/thread_pool.hpp"
+#include "parsers/bytes.hpp"
 #include "parsers/vpk.hpp"
 
 namespace sauce::fs::core
@@ -41,6 +42,22 @@ namespace
 {
 
 constexpr std::size_t kListedPaths = 5;
+
+std::string folded(std::string_view text)
+{
+    std::string key;
+    key.reserve(text.size());
+    for (const char character : text)
+    {
+        key.push_back(parsers::ascii_lower(character));
+    }
+    return key;
+}
+
+std::string loose_key(const LooseEntry& entry)
+{
+    return entry.root + '\n' + folded(entry.path);
+}
 
 void log_paths(const LogOptions& log, std::string_view label, const std::vector<std::string>& paths)
 {
@@ -313,8 +330,51 @@ private:
             ++changed_count;
         }
 
+        std::unordered_map<std::string, LooseEntry> existing_loose;
+        if (!read_loose_rows(options_.database, existing_loose, error))
+        {
+            return false;
+        }
+
+        DatabaseDelta loose_delta;
+        std::unordered_set<std::string> desired_loose;
+        desired_loose.reserve(plan.loose.size());
+        for (const LooseEntry& entry : plan.loose)
+        {
+            const std::string key = loose_key(entry);
+            desired_loose.insert(key);
+            const auto found = existing_loose.find(key);
+            if (found == existing_loose.end() || found->second.directory != entry.directory ||
+                found->second.size != entry.size || found->second.modified != entry.modified)
+            {
+                loose_delta.loose.push_back(entry);
+            }
+        }
+        for (const auto& [key, entry] : existing_loose)
+        {
+            (void)entry;
+            if (desired_loose.find(key) == desired_loose.end())
+            {
+                loose_delta.loose_removed.push_back(key);
+            }
+        }
+
+        bool metadata_dirty = force_all;
+        for (const std::string& path : dirty)
+        {
+            const std::string name = fs::path(path).filename().string();
+            if (parsers::ascii_iequals(name, "gameinfo.txt") ||
+                parsers::ascii_iequals(name, "gameinfo.gi") ||
+                parsers::ascii_iequals(name, "mount.cfg"))
+            {
+                metadata_dirty = true;
+                break;
+            }
+        }
+
+        const bool loose_changed = !loose_delta.loose.empty() || !loose_delta.loose_removed.empty();
         if (!forced_any && added_count == 0 && changed_count == 0 &&
-            existing.size() == candidates.size())
+            existing.size() == candidates.size() && !loose_changed && !metadata_dirty)
         {
             return true;
         }
@@ -370,6 +430,8 @@ private:
 
         DatabaseDelta delta;
         delta.games = plan.games;
+        delta.loose = std::move(loose_delta.loose);
+        delta.loose_removed = std::move(loose_delta.loose_removed);
         std::unordered_set<std::string> desired;
         desired.reserve(records.size());
         std::vector<std::string> added;
@@ -438,17 +500,23 @@ private:
         }
 
         const bool has_changes = !delta.removed.empty() || !delta.replaced.empty() ||
-                                 !added.empty() || !changed.empty() || forced_any || force_all;
+                                 !added.empty() || !changed.empty() || forced_any || force_all ||
+                                 !delta.loose.empty() || !delta.loose_removed.empty() ||
+                                 metadata_dirty;
         if (has_changes && !apply_database_delta(options_.database, delta, error))
         {
             return false;
         }
 
-        if (watch_.verbose && (!added.empty() || !changed.empty() || !delta.removed.empty() ||
-                               !failed.empty() || !parse_warnings.empty()))
+        if (watch_.verbose &&
+            (!added.empty() || !changed.empty() || !delta.removed.empty() || !failed.empty() ||
+             !parse_warnings.empty() || !delta.loose.empty() || !delta.loose_removed.empty()))
         {
-            SAUCE_FS_LOG(options_.log, Info, "index updated: +{} added, -{} removed, ~{} changed",
-                         added.size(), delta.removed.size(), changed.size());
+            SAUCE_FS_LOG(options_.log, Info,
+                         "index updated: +{} added, -{} removed, ~{} changed, "
+                         "loose +{} -{}",
+                         added.size(), delta.removed.size(), changed.size(), delta.loose.size(),
+                         delta.loose_removed.size());
             log_paths(options_.log, "+", added);
             log_paths(options_.log, "~", changed);
             log_paths(options_.log, "-", delta.removed);

@@ -2,17 +2,40 @@ Overview
 ========
 
 The index is a SQLite database with one row per installed game, one row per
-archive, and one row per file *and directory* inside each archive. Directories
-are materialized so ``readdir()`` becomes an equality lookup on
-``(archive_id, parent, name)`` instead of a prefix scan. No inode/dentry split
-is needed: the namespace is read-only, and archives cannot express hard links or
-renames.
+archive, and one row per file *and directory* inside each archive. Loose files
+below each game root are recorded separately with their metadata; their bytes
+are read from disk on demand. Directories are materialized so ``readdir()``
+becomes an equality lookup on ``(archive_id, parent, name)`` instead of a
+prefix scan. No inode/dentry split is needed: the namespace is read-only, and
+archives cannot express hard links or renames.
 
 The same three primitives serve every consumer:
 
 - :cpp:func:`sauce::fs::core::Provider::get` for random access by path,
 - :cpp:func:`sauce::fs::core::Provider::list` for folder browsing,
 - :cpp:func:`sauce::fs::core::Provider::stat` for metadata.
+
+Merged game views
+-----------------
+
+:cpp:class:`sauce::fs::core::IndexDatabase` can layer a game's content in the
+order the engine would use:
+
+- :cpp:func:`sauce::fs::core::IndexDatabase::engine_game_provider` follows the
+  ``SearchPaths`` block from ``gameinfo.txt``. Earlier entries win, directory
+  entries contribute loose files, VPK entries contribute archives, and map
+  pakfiles are appended as the lowest-precedence layers.
+- :cpp:func:`sauce::fs::core::IndexDatabase::garrysmod_game_provider` puts
+  loose addon directories and workshop addons above local addons, then engine
+  content, then games listed in ``cfg/mount.cfg``.
+- :cpp:func:`sauce::fs::core::IndexDatabase::ordered_game_provider` selects one
+  of these with :cpp:enum:`sauce::fs::core::GameOrder`; ``Auto`` uses Garry's
+  Mod rules for a Garry's Mod row and engine search paths otherwise.
+
+Search paths and Garry's Mod mount entries are persisted alongside the game
+rows, so consumers do not need to parse ``gameinfo.txt`` or ``mount.cfg`` at
+runtime. Loose-file metadata is refreshed by watch mode alongside archive
+entries.
 
 Building the index
 ------------------
@@ -97,9 +120,10 @@ Mounting
 
    ./build/linux/sauce-fs-mount --database index.db /mnt/sauce-full
 
-The mount root contains one directory per game, then one directory per archive,
-then the archive's internal tree. Scanning happens once; reads inflate DEFLATE
-and LZMA payloads on demand from the original archive files.
+The mount root contains one directory per game. Below a game are its archive
+trees and its loose files. Archive data is read on demand from the original
+files; loose files are read directly from disk. Reads inflate DEFLATE and LZMA
+payloads on demand from the original archive files.
 
 The mount is read-only, but reported permission bits are configurable.
 ``--file-mode 0644 --dir-mode 0755`` keeps files copied out of the mount

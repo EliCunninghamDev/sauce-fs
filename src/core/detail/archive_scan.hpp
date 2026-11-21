@@ -21,6 +21,9 @@ std::string hash_hex(std::uint64_t hash);
 
 std::uint64_t parse_hash_hex(std::string_view text);
 
+/// Coarse asset category inferred from a path's extension.
+AssetType classify_asset_type(std::string_view path) noexcept;
+
 /// Parse only the container's directory/index; entry payloads are never read.
 /// Updates GMA metadata on `record` and appends files and materialized
 /// directories to `contents`.

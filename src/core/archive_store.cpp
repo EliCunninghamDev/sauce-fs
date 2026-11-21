@@ -13,6 +13,7 @@
 #include "core/detail/archive_scan.hpp"
 #include "core/detail/archive_sql.hpp"
 #include "core/detail/sqlite_util.hpp"
+#include "parsers/bytes.hpp"
 
 namespace sauce::fs::core
 {
@@ -163,11 +164,117 @@ bool insert_content_rows(sqlite3* database, sqlite3_int64 archive_id,
     }
     return true;
 }
+
+std::string folded(std::string_view text)
+{
+    std::string key;
+    key.reserve(text.size());
+    for (const char character : text)
+    {
+        key.push_back(parsers::ascii_lower(character));
+    }
+    return key;
+}
+
+bool insert_game_metadata(sqlite3* database, sqlite3_int64 game_id, const GameRecord& game,
+                          std::string& error)
+{
+    sqlite::Statement search_path = sqlite::prepare(database, sql::kInsertSearchPath, error);
+    sqlite::Statement mount = sqlite::prepare(database, sql::kInsertMount, error);
+    if (!search_path || !mount)
+    {
+        return false;
+    }
+
+    auto step = [&](sqlite3_stmt* statement) { return sqlite::step_done(statement, error); };
+    sqlite3_int64 ordinal = 0;
+    for (const GameSearchPath& path : game.search_paths)
+    {
+        sqlite3_bind_int64(search_path.get(), 1, game_id);
+        sqlite3_bind_int64(search_path.get(), 2, ordinal++);
+        sqlite::bind_text(search_path.get(), 3, path.types);
+        sqlite::bind_text(search_path.get(), 4, path.path);
+        sqlite::bind_text(search_path.get(), 5, path.resolved);
+        sqlite::bind_text(search_path.get(), 6, path.kind);
+        if (!step(search_path.get()))
+        {
+            return false;
+        }
+    }
+
+    ordinal = 0;
+    for (const GameMount& entry : game.mounts)
+    {
+        sqlite3_bind_int64(mount.get(), 1, game_id);
+        sqlite3_bind_int64(mount.get(), 2, ordinal++);
+        sqlite::bind_text(mount.get(), 3, entry.name);
+        sqlite::bind_text(mount.get(), 4, entry.path);
+        sqlite::bind_text(mount.get(), 5, entry.source);
+        if (!step(mount.get()))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool insert_loose_rows(sqlite3* database, const std::vector<LooseEntry>& loose, std::string& error)
+{
+    sqlite::Statement file = sqlite::prepare(database, sql::kUpsertLooseFile, error);
+    sqlite::Statement directory = sqlite::prepare(database, sql::kInsertLooseDirectory, error);
+    if (!file || !directory)
+    {
+        return false;
+    }
+
+    auto step = [&](sqlite3_stmt* statement) { return sqlite::step_done(statement, error); };
+
+    // Files first: a path that appears both as a file and as a generated
+    // directory must keep its file row.
+    for (const LooseEntry& entry : loose)
+    {
+        if (entry.directory)
+        {
+            continue;
+        }
+        sqlite::bind_text(file.get(), 1, entry.root);
+        sqlite::bind_text(file.get(), 2, folded(entry.path));
+        sqlite::bind_text(file.get(), 3, entry.path);
+        sqlite::bind_text(file.get(), 4, folded(entry.parent));
+        sqlite::bind_text(file.get(), 5, entry.name);
+        sqlite3_bind_int64(file.get(), 6, static_cast<sqlite3_int64>(entry.size));
+        sqlite3_bind_int64(file.get(), 7, entry.modified);
+        sqlite::bind_text(file.get(), 8, asset_type_name(entry.asset_type));
+        if (!step(file.get()))
+        {
+            return false;
+        }
+    }
+
+    for (const LooseEntry& entry : loose)
+    {
+        if (!entry.directory)
+        {
+            continue;
+        }
+        sqlite::bind_text(directory.get(), 1, entry.root);
+        sqlite::bind_text(directory.get(), 2, folded(entry.path));
+        sqlite::bind_text(directory.get(), 3, entry.path);
+        sqlite::bind_text(directory.get(), 4, folded(entry.parent));
+        sqlite::bind_text(directory.get(), 5, entry.name);
+        if (!step(directory.get()))
+        {
+            return false;
+        }
+    }
+    return true;
+}
 } // namespace
 
 bool write_database(const fs::path& database, const std::vector<GameRecord>& games,
                     const std::vector<ArchiveRecord>& archives,
-                    const std::vector<ArchiveContent>& contents, std::string& error)
+                    const std::vector<ArchiveContent>& contents,
+                    const std::vector<LooseEntry>& loose, std::string& error)
 {
     sqlite::Database db = sqlite::open(database, sqlite::OpenMode::ReadWrite, error);
     if (!db)
@@ -234,11 +341,19 @@ bool write_database(const fs::path& database, const std::vector<GameRecord>& gam
         sqlite::bind_text(game.get(), 1, record.slug);
         sqlite::bind_text(game.get(), 2, record.title);
         sqlite::bind_text(game.get(), 3, record.game_path);
+        sqlite::bind_text(game.get(), 4, record.gameinfo);
+        sqlite3_bind_int(game.get(), 5, record.garrys_mod ? 1 : 0);
         if (!step(game.get()))
         {
             return false;
         }
-        game_ids.emplace(record.game_path, sqlite3_last_insert_rowid(db.get()));
+        const sqlite3_int64 id = sqlite3_last_insert_rowid(db.get());
+        game_ids.emplace(record.game_path, id);
+        if (!insert_game_metadata(db.get(), id, record, error))
+        {
+            sqlite::rollback(db.get());
+            return false;
+        }
     }
 
     std::unordered_map<std::string, sqlite3_int64> archive_ids;
@@ -349,6 +464,12 @@ bool write_database(const fs::path& database, const std::vector<GameRecord>& gam
         }
     }
 
+    if (!insert_loose_rows(db.get(), loose, error))
+    {
+        sqlite::rollback(db.get());
+        return false;
+    }
+
     if (!sqlite::commit(db.get(), error))
     {
         sqlite::rollback(db.get());
@@ -366,6 +487,51 @@ bool read_archive_rows(const fs::path& database,
         return false;
     }
     return load_archive_rows(db.get(), rows, error);
+}
+
+bool read_loose_rows(const fs::path& database, std::unordered_map<std::string, LooseEntry>& rows,
+                     std::string& error)
+{
+    sqlite::Database db = sqlite::open(database, sqlite::OpenMode::ReadWrite, error);
+    if (!db)
+    {
+        return false;
+    }
+
+    sqlite::Statement statement = sqlite::prepare(db.get(), sql::kSelectLooseRows, error);
+    if (!statement)
+    {
+        return false;
+    }
+
+    int step = SQLITE_ROW;
+    while ((step = sqlite3_step(statement.get())) == SQLITE_ROW)
+    {
+        LooseEntry entry;
+        entry.root = sqlite::column_text(statement.get(), 0);
+        std::string key = sqlite::column_text(statement.get(), 1);
+        entry.path = sqlite::column_text(statement.get(), 2);
+        entry.parent = sqlite::column_text(statement.get(), 3);
+        entry.name = sqlite::column_text(statement.get(), 4);
+        entry.directory = sqlite::column_text(statement.get(), 5) == "dir";
+        entry.size = static_cast<std::uint64_t>(sqlite3_column_int64(statement.get(), 6));
+        entry.modified = sqlite3_column_int64(statement.get(), 7);
+        if (!sqlite::column_is_null(statement.get(), 8))
+        {
+            const std::string type = sqlite::column_text(statement.get(), 8);
+            // The asset type is informational for diffing; a full scan will
+            // refresh it when the file changes.
+            (void)type;
+        }
+        key = entry.root + '\n' + key;
+        rows.emplace(std::move(key), std::move(entry));
+    }
+    if (step != SQLITE_DONE)
+    {
+        error = sqlite3_errmsg(db.get());
+        return false;
+    }
+    return true;
 }
 bool apply_database_delta(const fs::path& database, const DatabaseDelta& delta, std::string& error)
 {
@@ -388,6 +554,9 @@ bool apply_database_delta(const fs::path& database, const DatabaseDelta& delta, 
     sqlite::Statement stage_mount;
     sqlite::Statement update_archive;
     sqlite::Statement insert_archive;
+    sqlite::Statement delete_search_paths;
+    sqlite::Statement delete_mounts;
+    sqlite::Statement delete_loose;
 
     auto prepare = [&](sqlite::Statement& statement, std::string_view sql_text)
     {
@@ -401,7 +570,9 @@ bool apply_database_delta(const fs::path& database, const DatabaseDelta& delta, 
         prepare(delete_archive, sql::kDeleteArchive) &&
         prepare(stage_mount, sql::kStageArchiveMount) &&
         prepare(update_archive, sql::kUpdateArchive) &&
-        prepare(insert_archive, sql::kInsertArchive);
+        prepare(insert_archive, sql::kInsertArchive) &&
+        prepare(delete_search_paths, sql::kDeleteSearchPaths) &&
+        prepare(delete_mounts, sql::kDeleteMounts) && prepare(delete_loose, sql::kDeleteLoose);
     if (!prepared)
     {
         sqlite::rollback(db.get());
@@ -420,10 +591,12 @@ bool apply_database_delta(const fs::path& database, const DatabaseDelta& delta, 
         {
             id = sqlite3_column_int64(find_game.get(), 0);
             sqlite::reset(find_game.get());
-            // Bind order: slug, title, id.
+            // Bind order: slug, title, gameinfo, garrys_mod, id.
             sqlite::bind_text(update_game.get(), 1, game.slug);
             sqlite::bind_text(update_game.get(), 2, game.title);
-            sqlite3_bind_int64(update_game.get(), 3, id);
+            sqlite::bind_text(update_game.get(), 3, game.gameinfo);
+            sqlite3_bind_int(update_game.get(), 4, game.garrys_mod ? 1 : 0);
+            sqlite3_bind_int64(update_game.get(), 5, id);
             if (!step(update_game.get()))
             {
                 sqlite::rollback(db.get());
@@ -436,6 +609,8 @@ bool apply_database_delta(const fs::path& database, const DatabaseDelta& delta, 
             sqlite::bind_text(insert_game.get(), 1, game.slug);
             sqlite::bind_text(insert_game.get(), 2, game.title);
             sqlite::bind_text(insert_game.get(), 3, game.game_path);
+            sqlite::bind_text(insert_game.get(), 4, game.gameinfo);
+            sqlite3_bind_int(insert_game.get(), 5, game.garrys_mod ? 1 : 0);
             if (!step(insert_game.get()))
             {
                 sqlite::rollback(db.get());
@@ -451,6 +626,24 @@ bool apply_database_delta(const fs::path& database, const DatabaseDelta& delta, 
             return false;
         }
         game_ids.emplace(game.game_path, id);
+
+        sqlite3_bind_int64(delete_search_paths.get(), 1, id);
+        if (!step(delete_search_paths.get()))
+        {
+            sqlite::rollback(db.get());
+            return false;
+        }
+        sqlite3_bind_int64(delete_mounts.get(), 1, id);
+        if (!step(delete_mounts.get()))
+        {
+            sqlite::rollback(db.get());
+            return false;
+        }
+        if (!insert_game_metadata(db.get(), id, game, error))
+        {
+            sqlite::rollback(db.get());
+            return false;
+        }
     }
 
     std::unordered_map<std::string, StoredArchive> existing;
@@ -570,6 +763,37 @@ bool apply_database_delta(const fs::path& database, const DatabaseDelta& delta, 
         }
         if (replace_entries &&
             !insert_content_rows(db.get(), found->second.id, replaced->second, error))
+        {
+            sqlite::rollback(db.get());
+            return false;
+        }
+    }
+
+    for (const LooseEntry& entry : delta.loose)
+    {
+        sqlite::bind_text(delete_loose.get(), 1, entry.root);
+        sqlite::bind_text(delete_loose.get(), 2, folded(entry.path));
+        if (!step(delete_loose.get()))
+        {
+            sqlite::rollback(db.get());
+            return false;
+        }
+    }
+    if (!insert_loose_rows(db.get(), delta.loose, error))
+    {
+        sqlite::rollback(db.get());
+        return false;
+    }
+    for (const std::string& key : delta.loose_removed)
+    {
+        const std::size_t newline = key.find('\n');
+        if (newline == std::string::npos)
+        {
+            continue;
+        }
+        sqlite::bind_text(delete_loose.get(), 1, std::string_view(key).substr(0, newline));
+        sqlite::bind_text(delete_loose.get(), 2, std::string_view(key).substr(newline + 1));
+        if (!step(delete_loose.get()))
         {
             sqlite::rollback(db.get());
             return false;

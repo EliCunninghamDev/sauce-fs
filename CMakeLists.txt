@@ -69,6 +69,9 @@ add_library(sauce_fs_core STATIC
     src/core/archive_scan.cpp
     src/core/archive_store.cpp
     src/core/archive_watch.cpp
+    src/core/loose_provider.cpp
+    src/core/provider_order.cpp
+    src/core/search_paths.cpp
     src/core/sqlite_util.cpp
     src/core/thread_pool.cpp
     src/parsers/bsp.cpp
@@ -154,6 +157,13 @@ target_include_directories(sauce-fs-gma-metadata-test PRIVATE src)
 target_link_libraries(sauce-fs-gma-metadata-test PRIVATE sauce_fs_core fmt::fmt)
 add_test(NAME gma-metadata COMMAND sauce-fs-gma-metadata-test)
 set_tests_properties(gma-metadata PROPERTIES TIMEOUT 60)
+
+# Checks loose-file indexing and the engine/Garry's Mod provider ordering.
+add_executable(sauce-fs-loose-order-test tests/loose_order_test.cpp)
+target_include_directories(sauce-fs-loose-order-test PRIVATE src)
+target_link_libraries(sauce-fs-loose-order-test PRIVATE sauce_fs_core fmt::fmt)
+add_test(NAME loose-order COMMAND sauce-fs-loose-order-test)
+set_tests_properties(loose-order PROPERTIES TIMEOUT 60)
 
 # Installs into a scratch prefix, then configures and builds a standalone
 # project that consumes sauce::core through find_package(sauce-fs).

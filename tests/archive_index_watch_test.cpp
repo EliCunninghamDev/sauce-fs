@@ -157,10 +157,12 @@ int main()
     const fs::path database = root / "index.db";
     const fs::path first = game / "test_dir.vpk";
     const fs::path second = game / "other_dir.vpk";
+    const fs::path loose = game / "loose.txt";
 
     std::error_code ec;
     fs::create_directories(game, ec);
-    if (ec || !write_file(first, make_vpk("hello v1")))
+    if (ec || !write_file(first, make_vpk("hello v1")) ||
+        !write_file(loose, make_bytes("loose v1")))
     {
         return fail("cannot create fixture");
     }
@@ -219,6 +221,22 @@ int main()
         return archives ? archives->size() : std::size_t{0};
     };
 
+    auto read_loose = [&](const std::string& path, std::string& out)
+    {
+        auto provider = index->ordered_game_provider("game", sauce::fs::core::GameOrder::Index);
+        if (!provider)
+        {
+            return false;
+        }
+        auto blob = (*provider)->get(path);
+        if (!blob)
+        {
+            return false;
+        }
+        out.assign(reinterpret_cast<const char*>((*blob)->data()), (*blob)->size());
+        return true;
+    };
+
     std::string contents;
     if (!wait_for([&] { return read_file("materials/foo.vmt", contents); }, 10s) ||
         contents != "hello v1")
@@ -228,8 +246,38 @@ int main()
         return fail("initial index did not serve the fixture");
     }
 
+    std::string loose_contents;
+    if (!wait_for([&] { return read_loose("loose.txt", loose_contents); }, 10s) ||
+        loose_contents != "loose v1")
+    {
+        watcher.stop();
+        thread.join();
+        return fail("initial index did not serve loose files");
+    }
+
     // Give efsw a moment to install its watches after the initial build.
     std::this_thread::sleep_for(1000ms);
+    if (!write_file(loose, make_bytes("loose v2")))
+    {
+        watcher.stop();
+        thread.join();
+        return fail("cannot update loose fixture");
+    }
+    if (!wait_for(
+            [&] { return read_loose("loose.txt", loose_contents) && loose_contents == "loose v2"; },
+            10s))
+    {
+        watcher.stop();
+        thread.join();
+        return fail("watcher did not pick up a changed loose file");
+    }
+    if (!remove_file(loose) ||
+        !wait_for([&] { return !read_loose("loose.txt", loose_contents); }, 10s))
+    {
+        watcher.stop();
+        thread.join();
+        return fail("watcher did not pick up a removed loose file");
+    }
     if (!write_file(first, make_vpk("hello v2")))
     {
         watcher.stop();

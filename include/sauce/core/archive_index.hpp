@@ -74,6 +74,71 @@ enum class AssetType : std::uint8_t
 /// \c "Map", or \c "Script".
 std::string_view asset_type_name(AssetType type) noexcept;
 
+/// \brief One `SearchPaths` entry from the game's gameinfo file.
+///
+/// \details Entries are stored in file order. Runtime ordering treats earlier
+/// entries as higher precedence, matching the Source engine.
+struct GameSearchPath
+{
+    /// \brief Access flags as written, for example "game+mod" or "platform".
+    std::string types;
+
+    /// \brief Raw path text from gameinfo, including any tokens or wildcards.
+    std::string path;
+
+    /// \brief Absolute path after token substitution and wildcard expansion.
+    ///
+    /// Empty when the entry does not resolve on this machine.
+    std::string resolved;
+
+    /// \brief Resolved object kind: "dir", "vpk", "file", or "missing".
+    std::string kind;
+};
+
+/// \brief One game mount declared by Garry's Mod's `cfg/mount.cfg`.
+struct GameMount
+{
+    /// \brief Key from `mount.cfg`, usually the mounted game's folder name.
+    std::string name;
+
+    /// \brief Absolute mounted content root.
+    std::string path;
+
+    /// \brief Configuration file that declared the mount.
+    std::string source;
+};
+
+/// \brief One loose file or directory recorded outside any archive.
+///
+/// \details Loose entries are served directly from disk; the index stores only
+/// their metadata and the directory structure used for listings.
+struct LooseEntry
+{
+    /// \brief Absolute content root that `path` is relative to.
+    std::string root;
+
+    /// \brief Original relative path, `/`-separated with no leading slash.
+    std::string path;
+
+    /// \brief Original parent path; empty for entries directly below `root`.
+    std::string parent;
+
+    /// \brief Original final path component.
+    std::string name;
+
+    /// \brief Whether the entry is a directory.
+    bool directory = false;
+
+    /// \brief File size in bytes; zero for directories.
+    std::uint64_t size = 0;
+
+    /// \brief Last-write timestamp as file_time_type ticks since its epoch.
+    std::int64_t modified = 0;
+
+    /// \brief Asset category inferred from the entry extension.
+    AssetType asset_type = AssetType::Unknown;
+};
+
 /// \brief One installed game.
 ///
 /// \details The mount exposes it as `sourcegames/<slug>`.
@@ -89,6 +154,18 @@ struct GameRecord
 
     /// \brief Absolute content root (the directory containing gameinfo.txt).
     std::string game_path;
+
+    /// \brief Absolute gameinfo path, or empty when the game has none.
+    std::string gameinfo;
+
+    /// \brief Whether this game uses Garry's Mod addon mounting rules.
+    bool garrys_mod = false;
+
+    /// \brief Engine search paths parsed from gameinfo, in file order.
+    std::vector<GameSearchPath> search_paths;
+
+    /// \brief Additional game roots mounted through Garry's Mod.
+    std::vector<GameMount> mounts;
 };
 
 /// \brief One row of the archive table.
@@ -255,6 +332,12 @@ struct ArchiveIndexSummary
     /// \brief Directory rows included in ArchiveIndexResult::contents.
     std::size_t directories = 0;
 
+    /// \brief Loose files recorded outside any archive.
+    std::size_t loose_files = 0;
+
+    /// \brief Loose directories recorded outside any archive.
+    std::size_t loose_directories = 0;
+
     /// \brief Archives whose hash could not be computed.
     std::size_t unreadable = 0;
 
@@ -273,6 +356,9 @@ struct ArchiveIndexResult
 
     /// \brief Files and directories; see ArchiveContent::directory.
     std::vector<ArchiveContent> contents;
+
+    /// \brief Files and directories stored outside archives.
+    std::vector<LooseEntry> loose;
 
     /// \brief Counts and warnings for the scan.
     ArchiveIndexSummary summary;

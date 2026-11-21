@@ -186,6 +186,8 @@ struct IndexDatabase::Impl
     mutable std::mutex mutex;
     sqlite::Statement entry_statement;
     sqlite::Statement list_statement;
+    sqlite::Statement loose_entry_statement;
+    sqlite::Statement loose_list_statement;
     sqlite::Statement data_version_statement;
     std::uint64_t data_version = 0;
     std::vector<GameInfo> games;
@@ -251,6 +253,8 @@ struct IndexDatabase::Impl
             game.slug = sqlite::column_text(games_statement.get(), 1);
             game.title = sqlite::column_text(games_statement.get(), 2);
             game.game_path = sqlite::column_text(games_statement.get(), 3);
+            game.gameinfo = sqlite::column_text(games_statement.get(), 4);
+            game.garrys_mod = sqlite3_column_int(games_statement.get(), 5) != 0;
             game_by_id.emplace(game.id, games.size());
             game_by_key.emplace(lower_ascii(game.slug), games.size());
             games.push_back(std::move(game));
@@ -292,6 +296,45 @@ struct IndexDatabase::Impl
             archives_by_game[game->second].push_back(archive.id);
             archive_by_id.emplace(archive.id, archives.size());
             archives.push_back(std::move(archive));
+        }
+
+        sqlite::Statement paths = sqlite::prepare(db.get(), sql::kSelectSearchPaths, error);
+        if (!paths)
+        {
+            return false;
+        }
+        while (sqlite3_step(paths.get()) == SQLITE_ROW)
+        {
+            const auto game = game_by_id.find(sqlite3_column_int64(paths.get(), 0));
+            if (game == game_by_id.end())
+            {
+                continue;
+            }
+            GameInfo::SearchPath path;
+            path.types = sqlite::column_text(paths.get(), 1);
+            path.path = sqlite::column_text(paths.get(), 2);
+            path.resolved = sqlite::column_text(paths.get(), 3);
+            path.kind = sqlite::column_text(paths.get(), 4);
+            games[game->second].search_paths.push_back(std::move(path));
+        }
+
+        sqlite::Statement mounts = sqlite::prepare(db.get(), sql::kSelectMounts, error);
+        if (!mounts)
+        {
+            return false;
+        }
+        while (sqlite3_step(mounts.get()) == SQLITE_ROW)
+        {
+            const auto game = game_by_id.find(sqlite3_column_int64(mounts.get(), 0));
+            if (game == game_by_id.end())
+            {
+                continue;
+            }
+            GameInfo::Mount mount;
+            mount.name = sqlite::column_text(mounts.get(), 1);
+            mount.path = sqlite::column_text(mounts.get(), 2);
+            mount.source = sqlite::column_text(mounts.get(), 3);
+            games[game->second].mounts.push_back(std::move(mount));
         }
 
         sqlite::Statement totals = sqlite::prepare(db.get(), sql::kSelectEntryTotals, error);
@@ -336,8 +379,11 @@ struct IndexDatabase::Impl
 
         entry_statement = sqlite::prepare(db.get(), sql::kSelectEntry, error);
         list_statement = sqlite::prepare(db.get(), sql::kSelectDirectory, error);
+        loose_entry_statement = sqlite::prepare(db.get(), sql::kSelectLooseEntry, error);
+        loose_list_statement = sqlite::prepare(db.get(), sql::kSelectLooseDirectory, error);
         data_version_statement = sqlite::prepare(db.get(), sql::kDataVersion, error);
-        if (!entry_statement || !list_statement || !data_version_statement)
+        if (!entry_statement || !list_statement || !loose_entry_statement ||
+            !loose_list_statement || !data_version_statement)
         {
             return false;
         }
@@ -594,6 +640,127 @@ struct IndexDatabase::Impl
             return std::unexpected(make_error(ErrorCode::Io, "out of memory reading entry"));
         }
     }
+
+    Result<NodeInfo> loose_stat_locked(std::string_view root, std::string_view key) const
+    {
+        if (key.empty())
+        {
+            return NodeInfo{NodeInfo::Kind::Directory, 0};
+        }
+        sqlite::bind_text(loose_entry_statement.get(), 1, root);
+        sqlite::bind_text(loose_entry_statement.get(), 2, key);
+        const int result = sqlite3_step(loose_entry_statement.get());
+        if (result == SQLITE_DONE)
+        {
+            sqlite::reset(loose_entry_statement.get());
+            return std::unexpected(make_error(ErrorCode::NotFound, "path not found"));
+        }
+        if (result != SQLITE_ROW)
+        {
+            const std::string message = sqlite3_errmsg(db.get());
+            sqlite::reset(loose_entry_statement.get());
+            return std::unexpected(make_error(ErrorCode::Database, message));
+        }
+        NodeInfo info;
+        info.kind = sqlite::column_text(loose_entry_statement.get(), 0) == constants::kDirectoryKind
+                        ? NodeInfo::Kind::Directory
+                        : NodeInfo::Kind::File;
+        info.size =
+            info.kind == NodeInfo::Kind::Directory
+                ? 0
+                : static_cast<std::uint64_t>(sqlite3_column_int64(loose_entry_statement.get(), 1));
+        sqlite::reset(loose_entry_statement.get());
+        return info;
+    }
+
+    Result<std::vector<DirectoryEntry>> loose_list_locked(std::string_view root,
+                                                          std::string_view parent_key) const
+    {
+        if (!parent_key.empty())
+        {
+            auto info = loose_stat_locked(root, parent_key);
+            if (!info)
+            {
+                return std::unexpected(info.error());
+            }
+            if (info->kind != NodeInfo::Kind::Directory)
+            {
+                return std::unexpected(
+                    make_error(ErrorCode::NotADirectory, "path is not a directory"));
+            }
+        }
+
+        std::vector<DirectoryEntry> entries;
+        sqlite::bind_text(loose_list_statement.get(), 1, root);
+        sqlite::bind_text(loose_list_statement.get(), 2, parent_key);
+        int result = SQLITE_ROW;
+        while ((result = sqlite3_step(loose_list_statement.get())) == SQLITE_ROW)
+        {
+            DirectoryEntry entry;
+            entry.name = sqlite::column_text(loose_list_statement.get(), 0);
+            entry.info.kind =
+                sqlite::column_text(loose_list_statement.get(), 1) == constants::kDirectoryKind
+                    ? NodeInfo::Kind::Directory
+                    : NodeInfo::Kind::File;
+            entry.info.size = entry.info.kind == NodeInfo::Kind::File
+                                  ? static_cast<std::uint64_t>(
+                                        sqlite3_column_int64(loose_list_statement.get(), 2))
+                                  : 0;
+            entries.push_back(std::move(entry));
+        }
+        if (result != SQLITE_DONE)
+        {
+            const std::string message = sqlite3_errmsg(db.get());
+            sqlite::reset(loose_list_statement.get());
+            return std::unexpected(make_error(ErrorCode::Database, message));
+        }
+        sqlite::reset(loose_list_statement.get());
+        return entries;
+    }
+
+    Result<Blob> loose_blob_locked(std::string_view root, std::string_view key) const
+    {
+        sqlite::bind_text(loose_entry_statement.get(), 1, root);
+        sqlite::bind_text(loose_entry_statement.get(), 2, key);
+        const int result = sqlite3_step(loose_entry_statement.get());
+        if (result == SQLITE_DONE)
+        {
+            sqlite::reset(loose_entry_statement.get());
+            return std::unexpected(make_error(ErrorCode::NotFound, "path not found"));
+        }
+        if (result != SQLITE_ROW)
+        {
+            const std::string message = sqlite3_errmsg(db.get());
+            sqlite::reset(loose_entry_statement.get());
+            return std::unexpected(make_error(ErrorCode::Database, message));
+        }
+        const bool directory =
+            sqlite::column_text(loose_entry_statement.get(), 0) == constants::kDirectoryKind;
+        const std::string path = sqlite::column_text(loose_entry_statement.get(), 3);
+        sqlite::reset(loose_entry_statement.get());
+        if (directory)
+        {
+            return std::unexpected(make_error(ErrorCode::NotAFile, "path is a directory"));
+        }
+
+        std::error_code ec;
+        const fs::path file = fs::path(root) / path;
+        const std::uintmax_t current_size = fs::file_size(file, ec);
+        if (ec)
+        {
+            return std::unexpected(make_error(
+                ErrorCode::Io, "cannot read " + file.generic_string() + ": " + ec.message()));
+        }
+
+        Bytes bytes;
+        std::string message;
+        if (!parsers::read_file_range(file, 0, static_cast<std::uint64_t>(current_size), bytes,
+                                      &message))
+        {
+            return std::unexpected(make_error(ErrorCode::Io, message));
+        }
+        return std::make_shared<const Bytes>(std::move(bytes));
+    }
 };
 
 IndexDatabase::IndexDatabase() : impl_(std::make_unique<Impl>()) {}
@@ -684,6 +851,57 @@ Result<Blob> IndexDatabase::entry_blob(std::int64_t archive_id, std::string_view
     return impl_->entry_blob_locked(archive_id, path);
 }
 
+Result<NodeInfo> IndexDatabase::loose_stat(std::string_view root, std::string_view key) const
+{
+    std::lock_guard lock(impl_->mutex);
+    std::string error;
+    bool changed = false;
+    if (!impl_->ensure_current_locked(error, changed))
+    {
+        return std::unexpected(make_error(ErrorCode::Database, error));
+    }
+    return impl_->loose_stat_locked(root, key);
+}
+
+Result<std::vector<DirectoryEntry>> IndexDatabase::loose_list(std::string_view root,
+                                                              std::string_view parent_key) const
+{
+    std::lock_guard lock(impl_->mutex);
+    std::string error;
+    bool changed = false;
+    if (!impl_->ensure_current_locked(error, changed))
+    {
+        return std::unexpected(make_error(ErrorCode::Database, error));
+    }
+    return impl_->loose_list_locked(root, parent_key);
+}
+
+Result<Blob> IndexDatabase::loose_blob(std::string_view root, std::string_view key) const
+{
+    std::lock_guard lock(impl_->mutex);
+    std::string error;
+    bool changed = false;
+    if (!impl_->ensure_current_locked(error, changed))
+    {
+        return std::unexpected(make_error(ErrorCode::Database, error));
+    }
+    return impl_->loose_blob_locked(root, key);
+}
+
+Result<ProviderPtr> IndexDatabase::loose_provider(std::filesystem::path root,
+                                                  std::string_view prefix) const
+{
+    std::lock_guard lock(impl_->mutex);
+    std::string error;
+    bool changed = false;
+    if (!impl_->ensure_current_locked(error, changed))
+    {
+        return std::unexpected(make_error(ErrorCode::Database, error));
+    }
+    return ProviderPtr(std::make_shared<LooseFileProvider>(
+        shared_from_this(), root.generic_string(), std::string(prefix)));
+}
+
 Result<ProviderPtr> IndexDatabase::archive_provider(std::int64_t archive_id) const
 {
     std::lock_guard lock(impl_->mutex);
@@ -727,7 +945,9 @@ Result<ProviderPtr> IndexDatabase::game_provider(std::string_view slug,
     }
 
     std::vector<ProviderPtr> layers;
-    layers.reserve(ids.size());
+    layers.reserve(ids.size() + 1);
+    layers.push_back(std::make_shared<LooseFileProvider>(shared_from_this(),
+                                                         impl_->games[game->second].game_path));
     for (const std::int64_t archive_id : ids)
     {
         if (impl_->archive_by_id.find(archive_id) == impl_->archive_by_id.end())
@@ -735,10 +955,6 @@ Result<ProviderPtr> IndexDatabase::game_provider(std::string_view slug,
             return std::unexpected(make_error(ErrorCode::NotFound, "archive is not indexed"));
         }
         layers.push_back(std::make_shared<ArchiveProvider>(shared_from_this(), archive_id));
-    }
-    if (layers.empty())
-    {
-        return ProviderPtr(std::make_shared<TreeProvider>(std::vector<TreeProvider::Child>{}));
     }
     return ProviderPtr(std::make_shared<LayeredProvider>(std::move(layers)));
 }
@@ -831,7 +1047,26 @@ Result<ProviderPtr> IndexDatabase::mount_provider() const
         }
         return std::make_shared<TreeProvider>(std::move(children));
     };
-    return build(root);
+
+    std::vector<TreeProvider::Child> top;
+    top.reserve(root.children.size());
+    for (auto& [key, child] : root.children)
+    {
+        ProviderPtr archive_tree = build(child);
+        const auto game = impl_->game_by_key.find(key);
+        if (game == impl_->game_by_key.end())
+        {
+            top.push_back(TreeProvider::Child{child.name, std::move(archive_tree)});
+            continue;
+        }
+        const GameInfo& info = impl_->games[game->second];
+        std::vector<ProviderPtr> layers;
+        layers.push_back(std::make_shared<LooseFileProvider>(shared_from_this(), info.game_path));
+        layers.push_back(std::move(archive_tree));
+        top.push_back(
+            TreeProvider::Child{child.name, std::make_shared<LayeredProvider>(std::move(layers))});
+    }
+    return std::make_shared<TreeProvider>(std::move(top));
 }
 
 std::uint64_t IndexDatabase::file_count() const

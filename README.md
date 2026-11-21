@@ -1,9 +1,10 @@
 # sauce-fs
 
-Read-only access to Source engine content archives: VPK `_dir` trees and side
-archives, embedded BSP pakfiles, GMA addons, and legacy `.bin` addons. Entry
-metadata is recorded in SQLite and read back as raw bytes, inflating DEFLATE
-and LZMA payloads on demand.
+Read-only access to Source engine content archives and loose game files: VPK
+`_dir` trees and side archives, embedded BSP pakfiles, GMA addons, legacy `.bin`
+addons, and files stored directly below a game root. Entry metadata is recorded
+in SQLite and read back as raw bytes, inflating DEFLATE and LZMA payloads on
+demand.
 
 The project is split into two layers:
 
@@ -158,7 +159,8 @@ Only archives whose size or last-write time changed are hashed again. If a
 rewrite produced the same XXH3 digest, the existing entry rows are kept, so a
 touched but unchanged VPK is cheap. Added archives are parsed and inserted,
 removed archives are deleted, and a changed mount path (collision suffixes can
-shift when an archive appears) is updated transactionally. Archives are never
+shift when an archive appears) is updated transactionally. Loose files are
+diffed by path, size, and timestamp on the same pass. Archives are never
 reparsed just because a sibling changed. Watch roots are selected from the same
 game folders as the initial build; restart the watcher when a whole new game
 folder appears.
@@ -185,6 +187,11 @@ resolved through the parent `_dir` archive. BSPs embed a ZIP, so their entries
 carry absolute offsets and method 0/8/14. Legacy `.bin` offsets are relative to
 the decoded GMAD payload.
 
+Files that are not archive containers are indexed as loose entries with their
+metadata and materialized parent directories. Their bytes are read directly
+from disk, so edits do not require reindexing. Watch mode diffs loose entries
+alongside archives.
+
 `archives.archive_type_id` references the `archive_type` lookup table. GMAD
 archives also store the header metadata: addon name, description (the raw
 `addon.json` string), author, addon version, SteamID64, and pack timestamp.
@@ -201,21 +208,27 @@ archives also store the header metadata: addon name, description (the raw
 ```
 
 `--game SLUG` switches from the per-archive view to a merged game view, and
-`--resolve` exercises the raw-pointer resolver:
+`--resolve` exercises the raw-pointer resolver. `--order` selects the merge
+policy: `auto` (default), `engine`, `garrysmod`, or `index`:
 
 ```sh
 ./build/linux/sauce-fs-get --database index.db --game half-life-2 --list materials
+./build/linux/sauce-fs-get --database index.db --game half-life-2 --order engine --list materials
 ./build/linux/sauce-fs-get --database index.db --resolve half-life-2/hl2/materials/foo.vmt
 ```
 
-The default view is `game/archive-mount-path/internal-path`; with `--game` paths
-are relative to the game root.
+The default view is `game/path`: archive internals appear as
+`game/archive-mount-path/internal-path`, and loose files appear at their real
+`game/path`. With `--game` paths are relative to the game root. `engine`
+follows the game's `gameinfo.txt` `SearchPaths`; `garrysmod` puts loose addons
+and workshop content above local addons and applies `cfg/mount.cfg`. Both
+include loose files.
 
 ### Mount
 
 `sauce-fs-mount` mounts the index read-only. The root is `sourcegames`, then one
-directory per game slug, one directory per archive, then the archive's internal
-tree:
+directory per game slug. Below a game are its archive trees and its loose files;
+archive internals follow `archive-mount-path/internal-path`:
 
 ```sh
 mkdir -p /mnt/sourcegames
@@ -250,12 +263,20 @@ Result<Blob> get(std::string_view path) const;   // Blob = shared_ptr<const Byte
 `get` returns `std::expected<Blob, Error>`. Providers compose:
 
 - `ArchiveProvider` — one archive; paths are archive-internal.
+- `LooseFileProvider` — loose files below a game root; bytes come from disk.
 - `LayeredProvider` — ordered overlay; first layer wins for `stat`/`get`, and
   `list` unions the layers. This is where merge resolution lives.
 - `TreeProvider` — synthetic directories for game and archive levels.
 - `IndexDatabase` — opens the database, owns the decoded-file cache, and builds
-  providers through `archive_provider()`, `game_provider(slug, order)`, and
-  `mount_provider()`.
+  providers through `archive_provider()`, `game_provider(slug, order)`,
+  `engine_game_provider()`, `garrysmod_game_provider()`,
+  `ordered_game_provider()`, and `mount_provider()`.
+
+`engine_game_provider()` layers content in ``gameinfo.txt`` search-path order;
+`garrysmod_game_provider()` applies loose addons, workshop addons, local
+addons, engine content, and `cfg/mount.cfg` games in that order. `GameOrder`
+selects a policy explicitly, and `Auto` picks Garry's Mod rules for a Garry's
+Mod row.
 
 For consumers that cannot handle `Result<T>` or exceptions, `Provider::resolve`
 is a `noexcept` variant returning `bool` and filling a `ResolvedEntry` with a
@@ -274,8 +295,15 @@ lives in `sauce::fs::fuse` and only depends on the public `core` API.
 
 ### Database schema
 
-- `games(id, slug, title, game_path)` — one row per detected game. `slug` is
-  derived from the title (`half-life-2`) because folder names collide.
+- `games(id, slug, title, game_path, gameinfo, garrys_mod)` — one row per
+  detected game. `slug` is derived from the title (`half-life-2`) because
+  folder names collide. `gameinfo` records the parsed file, and `garrys_mod`
+  selects the addon ordering policy.
+- `game_search_paths(game_id, ordinal, types, raw, resolved, kind)` — resolved
+  `SearchPaths` entries in file order; kind is `dir`, `vpk`, `file`, or
+  `missing`.
+- `game_mounts(game_id, ordinal, name, path, source)` — Garry's Mod
+  `cfg/mount.cfg` entries.
 - `archive_type(id, name)` — lookup table for the archive container kind
   (`vpk`, `bsp-pak`, `gma`, `gma-bin`).
 - `archives(id, game_id, path, mount_path, name, stem, archive_type_id, hash,
@@ -287,6 +315,10 @@ lives in `sauce::fs::fuse` and only depends on the public `core` API.
   size, method, preload_offset, preload_length, assettype)` — primary key
   `(archive_id, path)`, `WITHOUT ROWID`, indexed by
   `(archive_id, parent, name)`.
+- `loose_entries(root, key, path, parent_key, name, kind, size, modified,
+  assettype)` — primary key `(root, case-folded key)`, `WITHOUT ROWID`,
+  indexed by `(root, parent_key, name)`. `path` preserves the on-disk case;
+  `key` is used for case-insensitive lookups.
 
 Directories are materialized as rows, so listing is a parent lookup. `size` is
 the logical file size, `length` the stored byte count, `method` is 0 (stored),
@@ -319,6 +351,9 @@ in the repository settings.
 ## Limitations
 
 - The mount is Linux/FUSE3 only; `sauce_fs_core` itself is portable.
+- Loose files are indexed below each game root. Search-path directories outside
+  every indexed game (for example a shared `platform/` folder) are recorded but
+  have no loose rows to serve.
 - FUSE `open` materializes the whole logical file, so opening a very large entry
   allocates its full size. The decoded-file cache is 256 MB; legacy `.bin`
   payloads are pinned separately.
