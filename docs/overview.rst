@@ -99,6 +99,26 @@ Only ``include/sauce/core/`` is public. Parsers, SQL text, SQLite helpers, and
 the watcher implementation stay private to the library target, so the public
 headers depend on nothing beyond the standard library.
 
+To keep the index current inside an existing event loop, start the watcher on a
+background thread and read semantic events:
+
+.. code-block:: cpp
+
+   ArchiveIndexWatcher watcher(options, watch);
+   watcher.start();
+   while (const auto event = watcher.waitEvent())
+   {
+       // IndexReady, ArchiveChanged(event->path), IndexUpdated, ...
+   }
+   watcher.stop();
+
+Events are published only after a successful SQLite commit. The queue is bounded
+by :cpp:member:`sauce::fs::core::ArchiveWatchOptions::max_queued_events`, which
+reports overflow through an ``EventsDropped`` marker while never dropping
+``IndexReady``, ``Failed``, or ``Stopped``.
+:cpp:func:`sauce::fs::core::ArchiveIndexWatcher::run` remains available for
+callers that simply want to block.
+
 Logging
 -------
 

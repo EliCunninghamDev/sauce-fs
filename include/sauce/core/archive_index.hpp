@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -400,6 +401,67 @@ struct ArchiveIndexResult
 /// incremental updates.
 bool build_archive_index(const ArchiveIndexOptions& options, ArchiveIndexResult& result);
 
+/// \brief Kind of semantic event reported by ArchiveIndexWatcher.
+enum class WatchEventKind : std::uint8_t
+{
+    /// \brief The initial full build committed and the roots are being watched.
+    IndexReady,
+    /// \brief An incremental rescan committed one or more changes.
+    IndexUpdated,
+    /// \brief A main archive appeared in the index.
+    ArchiveAdded,
+    /// \brief An archive's contents, size, or modification time changed.
+    ArchiveChanged,
+    /// \brief An archive disappeared from the index.
+    ArchiveRemoved,
+    /// \brief A non-fatal diagnostic, such as an unreadable file.
+    Warning,
+    /// \brief The initial build failed or an incremental update could not be
+    /// committed.
+    Failed,
+    /// \brief The watch loop returned; no later events will be emitted.
+    Stopped,
+    /// \brief The queue overflowed; events were coalesced or dropped.
+    EventsDropped,
+};
+
+/// \brief One semantic index event delivered by ArchiveIndexWatcher.
+///
+/// Events are values: consumers may copy them freely and process them without
+/// holding any watcher lock.
+struct WatchEvent
+{
+    /// \brief What changed.
+    WatchEventKind kind = WatchEventKind::Warning;
+
+    /// \brief Archive path for the Archive* kinds; empty otherwise.
+    std::string path;
+
+    /// \brief Diagnostic text for Warning, Failed, Stopped, and
+    /// EventsDropped.
+    std::string message;
+
+    /// \brief Monotonic sequence number assigned when the event was queued.
+    ///
+    /// Gaps mean events were coalesced or dropped.
+    std::uint64_t generation = 0;
+
+    /// \brief Archives added by an IndexUpdated event.
+    std::size_t added = 0;
+
+    /// \brief Archives changed by an IndexUpdated event.
+    std::size_t changed = 0;
+
+    /// \brief Archives removed by an IndexUpdated event.
+    std::size_t removed = 0;
+
+    /// \brief Loose files added by an IndexUpdated event.
+    std::size_t loose_added = 0;
+
+    /// \brief Loose files removed by an IndexUpdated event.
+    std::size_t loose_removed = 0;
+};
+
 /// \brief Tuning for ArchiveIndexWatcher.
 struct ArchiveWatchOptions
 {
@@ -412,13 +474,22 @@ struct ArchiveWatchOptions
 
     /// \brief Emit an Info message for each archive added, removed, or changed.
     bool verbose = true;
+
+    /// \brief Maximum number of events retained for consumers.
+    ///
+    /// When the queue is full, another event with the same kind and path is
+    /// merged into the queued one, and one WatchEventKind::EventsDropped marker
+    /// is appended. Terminal events (IndexReady, Failed, and Stopped) are
+    /// always queued. Zero disables the bound.
+    std::size_t max_queued_events = 4096;
 };
 
 /// \brief Long-running indexer that keeps a database in sync with its archives.
 ///
 /// \details run() performs a full build and then watches the scanned roots with
 /// efsw, applying incremental SQLite updates whenever an archive is added,
-/// replaced, or deleted.
+/// replaced, or deleted. start() performs the same work on a background thread
+/// and reports it through a thread-safe event queue.
 ///
 /// Only archives whose size or modification time changed are rehashed, and an
 /// archive that was rewritten without a content change keeps its existing
@@ -430,12 +501,49 @@ public:
     ///
     /// \param options Scan paths and database target; also copied into each
     /// incremental update.
-    /// \param watch Debounce and verbosity settings.
+    /// \param watch Debounce, verbosity, and queue bounds.
     explicit ArchiveIndexWatcher(ArchiveIndexOptions options, ArchiveWatchOptions watch = {});
     ~ArchiveIndexWatcher();
 
     ArchiveIndexWatcher(const ArchiveIndexWatcher&) = delete;
     ArchiveIndexWatcher& operator=(const ArchiveIndexWatcher&) = delete;
+
+    /// \brief Build the index on a background thread, then watch.
+    ///
+    /// \details Readiness is reported as WatchEventKind::IndexReady; an initial
+    /// build failure is reported as WatchEventKind::Failed followed by
+    /// WatchEventKind::Stopped. Failures do not throw on the worker thread.
+    ///
+    /// \return \c false when run() or start() is already active, or when the
+    /// worker thread could not be created.
+    /// \note Events from a previous run are discarded.
+    bool start();
+
+    /// \brief Remove and return the oldest queued event, if any.
+    ///
+    /// \note Safe to call from any thread. Multiple consumers split the queue.
+    std::optional<WatchEvent> pollEvent();
+
+    /// \brief Block until an event is queued or the watcher stops.
+    ///
+    /// \param timeout Maximum time to wait; \c std::nullopt waits indefinitely.
+    /// \return The oldest event, or \c std::nullopt when the timeout expired or
+    /// the watcher stopped with an empty queue.
+    /// \note Safe to call from any thread.
+    std::optional<WatchEvent> waitEvent(std::optional<std::chrono::milliseconds> timeout);
+
+    /// \brief waitEvent() without a timeout.
+    std::optional<WatchEvent> waitEvent();
+
+    /// \brief Remove and return every queued event in order.
+    ///
+    /// \note Safe to call from any thread.
+    std::vector<WatchEvent> drainEvents();
+
+    /// \brief \c true while run() or a start()ed worker is active.
+    ///
+    /// \note Safe to call from any thread.
+    bool running() const noexcept;
 
     /// \brief Build the index once, start watching, and block until stop() is
     /// called.
@@ -443,13 +551,15 @@ public:
     /// \param[out] result Receives the initial full snapshot.
     /// \return \c false only when the initial build or an incremental database
     /// update fails; individual archive failures are reported as warnings.
-    /// \note Later updates are applied directly to the database and summarized
-    /// through the log callback.
+    /// \note Later updates are applied directly to the database, summarized
+    /// through the log callback, and also published as events. Returns \c false
+    /// when start() is already running.
     bool run(ArchiveIndexResult& result);
 
-    /// \brief Ask a running run() call to return.
+    /// \brief Ask a running run() or start()ed worker to return.
     ///
-    /// \note Safe to call from another thread.
+    /// \note Safe to call from another thread and idempotent. When the watcher
+    /// was started with start(), this joins the worker before returning.
     void stop() noexcept;
 
 private:

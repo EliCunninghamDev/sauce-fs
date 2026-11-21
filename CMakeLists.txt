@@ -69,6 +69,8 @@ add_library(sauce_fs_core STATIC
     src/core/archive_scan.cpp
     src/core/archive_store.cpp
     src/core/archive_watch.cpp
+    src/core/archive_watch_events.cpp
+    src/core/archive_watch_refresh.cpp
     src/core/loose_provider.cpp
     src/core/provider_order.cpp
     src/core/search_paths.cpp
@@ -149,6 +151,14 @@ target_include_directories(sauce-fs-index-watch-test PRIVATE src)
 target_link_libraries(sauce-fs-index-watch-test PRIVATE sauce_fs_core fmt::fmt)
 add_test(NAME index-watch COMMAND sauce-fs-index-watch-test)
 set_tests_properties(index-watch PROPERTIES TIMEOUT 60)
+
+# Exercises the bounded, thread-safe event queue directly: ordering, wait,
+# overflow coalescing, and terminal-event delivery.
+add_executable(sauce-fs-watch-events-test tests/watch_events_test.cpp)
+target_include_directories(sauce-fs-watch-events-test PRIVATE src)
+target_link_libraries(sauce-fs-watch-events-test PRIVATE sauce_fs_core fmt::fmt)
+add_test(NAME watch-events COMMAND sauce-fs-watch-events-test)
+set_tests_properties(watch-events PROPERTIES TIMEOUT 60)
 
 # Builds GMAD fixtures and checks the archive_type lookup plus the addon
 # metadata read back from the database.

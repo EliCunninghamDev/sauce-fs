@@ -290,6 +290,47 @@ if (provider->resolve("materials/foo.vmt", entry))
 }
 ```
 
+### Watching for changes
+
+`ArchiveIndexWatcher` keeps the database current. `run(result)` builds once and
+then blocks; that is what the CLI uses. Embedders that own an event loop can
+call `start()` and consume semantic events instead:
+
+```cpp
+ArchiveIndexWatcher watcher(options, watch);
+watcher.start();
+
+for (;;)
+{
+    const auto event = watcher.waitEvent();
+    if (!event)
+    {
+        break;   // stopped and the queue is empty
+    }
+    switch (event->kind)
+    {
+    case WatchEventKind::IndexReady:     /* build caches now */ break;
+    case WatchEventKind::ArchiveChanged: /* invalidate event->path */ break;
+    case WatchEventKind::Failed:         /* report event->message */ break;
+    default: break;
+    }
+}
+watcher.stop();
+```
+
+`start()` is asynchronous: `IndexReady` means the initial full build and the
+post-watch reconcile are both committed, so a consumer does not need a separate
+one-shot build. Each incremental commit publishes per-archive `ArchiveAdded`,
+`ArchiveChanged`, and `ArchiveRemoved` events, followed by an `IndexUpdated`
+summary. Events are emitted only after a successful SQLite commit and carry
+values, so no watcher lock is held while a consumer processes one.
+
+The queue is bounded by `ArchiveWatchOptions::max_queued_events`; on overflow,
+repeated `(kind, path)` events are coalesced, one `EventsDropped` marker is
+queued, and generations show the gap. `IndexReady`, `Failed`, and `Stopped` are
+always delivered. `pollEvent()`, `waitEvent()`, `drainEvents()`, and `running()`
+are safe to call from any thread.
+
 Everything in the indexing library lives in `sauce::fs::core`. The FUSE layer
 lives in `sauce::fs::fuse` and only depends on the public `core` API.
 

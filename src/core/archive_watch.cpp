@@ -2,7 +2,6 @@
 
 #include <sauce/core/archive_index.hpp>
 
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -13,10 +12,7 @@
 #include <mutex>
 #include <set>
 #include <string>
-#include <string_view>
 #include <thread>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -25,11 +21,10 @@
 #include "core/detail/archive_build.hpp"
 #include "core/detail/archive_constants.hpp"
 #include "core/detail/archive_discovery.hpp"
-#include "core/detail/archive_scan.hpp"
-#include "core/detail/archive_store.hpp"
 #include "core/detail/index_summary.hpp"
 #include "core/detail/log.hpp"
-#include "core/detail/thread_pool.hpp"
+#include "core/detail/watch_events.hpp"
+#include "core/detail/watch_refresh.hpp"
 #include "parsers/bytes.hpp"
 #include "parsers/vpk.hpp"
 
@@ -38,72 +33,163 @@ namespace sauce::fs::core
 
 namespace fs = std::filesystem;
 
-namespace
-{
-
-constexpr std::size_t kListedPaths = 5;
-
-std::string folded(std::string_view text)
-{
-    std::string key;
-    key.reserve(text.size());
-    for (const char character : text)
-    {
-        key.push_back(parsers::ascii_lower(character));
-    }
-    return key;
-}
-
-std::string loose_key(const LooseEntry& entry)
-{
-    return entry.root + '\n' + folded(entry.path);
-}
-
-void log_paths(const LogOptions& log, std::string_view label, const std::vector<std::string>& paths)
-{
-    (void)log;
-    (void)label;
-
-    const std::size_t limit = std::min<std::size_t>(paths.size(), kListedPaths);
-    for (std::size_t index = 0; index < limit; ++index)
-    {
-        SAUCE_FS_LOG(log, Info, "  {} {}", label, paths[index]);
-    }
-    if (paths.size() > limit)
-    {
-        SAUCE_FS_LOG(log, Info, "  {} ... {} more", label, paths.size() - limit);
-    }
-}
-
-} // namespace
-
 struct ArchiveIndexWatcher::Impl final : private efsw::FileWatchListener
 {
     Impl(ArchiveIndexOptions options, ArchiveWatchOptions watch)
-        : options_(std::move(options)), watch_(watch)
+        : options_(std::move(options)), watch_(watch), events_(watch.max_queued_events)
     {
     }
 
     ~Impl() override
     {
         stop();
-        for (const efsw::WatchID id : watch_ids_)
+        remove_watches();
+    }
+
+    bool start()
+    {
+        std::unique_lock lock(lifecycle_mutex_);
+        if (worker_.joinable())
         {
-            watcher_.removeWatch(id);
+            if (running_.load())
+            {
+                return false;
+            }
+            worker_.join();
         }
+        begin_run();
+        try
+        {
+            worker_ = std::thread([this] { (void)run_worker(nullptr); });
+        }
+        catch (const std::exception& exception)
+        {
+            running_.store(false);
+            events_.push(failure_event(std::string("cannot start watcher: ") + exception.what()));
+            events_.push(stop_event());
+            events_.close();
+            return false;
+        }
+        return true;
     }
 
     bool run(ArchiveIndexResult& result)
     {
+        std::unique_lock lock(lifecycle_mutex_);
+        if (worker_.joinable())
+        {
+            if (running_.load())
+            {
+                return false;
+            }
+            worker_.join();
+        }
+        begin_run();
+        lock.unlock();
+        return run_worker(&result);
+    }
+
+    void stop() noexcept
+    {
+        std::lock_guard lock(lifecycle_mutex_);
+        // Set the flag under the lifecycle lock so a concurrent start() cannot
+        // reset it after begin_run() and leave the worker running.
+        stopping_.store(true);
+        event_ready_.notify_all();
+        events_.wake();
+
+        // A synchronous run() has no worker; it observes stopping_ instead.
+        if (worker_.joinable() && worker_.get_id() != std::this_thread::get_id())
+        {
+            // run_worker() never takes lifecycle_mutex_, so joining here cannot
+            // deadlock and a concurrent start() waits until the join finishes.
+            worker_.join();
+        }
+    }
+
+    std::optional<WatchEvent> poll_event()
+    {
+        return events_.poll();
+    }
+
+    std::optional<WatchEvent> wait_event(std::optional<std::chrono::milliseconds> timeout)
+    {
+        return events_.wait(timeout);
+    }
+
+    std::vector<WatchEvent> drain_events()
+    {
+        return events_.drain();
+    }
+
+    bool running() const noexcept
+    {
+        return running_.load();
+    }
+
+private:
+    // Requires lifecycle_mutex_ and a finished or absent worker.
+    void begin_run()
+    {
+        stopping_.store(false);
+        {
+            std::lock_guard lock(event_mutex_);
+            dirty_paths_.clear();
+            reparse_paths_.clear();
+            event_generation_ = 0;
+            dirty_ = false;
+            missed_events_ = false;
+        }
+        remove_watches();
+        events_.open();
+        running_.store(true);
+    }
+
+    bool run_worker(ArchiveIndexResult* external) noexcept
+    {
+        bool ok = false;
+        std::string failure;
+        try
+        {
+            ok = run_worker_body(external, failure);
+        }
+        catch (const std::exception& exception)
+        {
+            failure = exception.what();
+        }
+        catch (...)
+        {
+            failure = "unknown exception";
+        }
+
+        if (!ok)
+        {
+            events_.push(failure_event(failure.empty() ? "index watcher failed" : failure));
+        }
+        events_.push(stop_event());
+
+        remove_watches();
+        running_.store(false);
+        events_.close();
+        return ok;
+    }
+
+    bool run_worker_body(ArchiveIndexResult* external, std::string& failure)
+    {
         ScanPlan plan = collect_scan_plan(options_);
         const std::vector<fs::path> roots = plan.watch_roots;
+
+        ArchiveIndexResult local;
+        ArchiveIndexResult& result = external != nullptr ? *external : local;
         const bool built = build_from_plan(options_, plan, result);
         detail::log_index_summary(options_.log, result, options_.database);
         if (!built)
         {
+            failure = result.error.empty() ? "initial index build failed" : result.error;
             return false;
         }
 
+        watcher_ = std::make_unique<efsw::FileWatcher>();
         for (const fs::path& root : roots)
         {
             std::error_code ec;
@@ -111,25 +197,44 @@ struct ArchiveIndexWatcher::Impl final : private efsw::FileWatchListener
             {
                 continue;
             }
-            const efsw::WatchID id = watcher_.addWatch(root.string(), this, true);
+            const efsw::WatchID id = watcher_->addWatch(root.string(), this, true);
             if (id < 0)
             {
                 SAUCE_FS_LOG(options_.log, Warning, "cannot watch {}", root.string());
+                events_.push(warning_event("cannot watch " + root.string()));
                 continue;
             }
             watch_ids_.push_back(id);
         }
-        watcher_.watch();
+        watcher_->watch();
 
         // Reconcile once more: a game update can land between the initial walk
-        // and the point where efsw has installed every recursive watch.
+        // and the point where efsw has installed every recursive watch. This is
+        // still part of initial readiness, so it produces no incremental
+        // events.
         {
+            detail::WatchRefreshSummary reconcile;
             std::string error;
-            if (!refresh(result, {}, {}, false, error))
+            if (!detail::refresh_watch_index(options_, watch_.verbose, {}, {}, false, reconcile,
+                                             error))
             {
                 SAUCE_FS_LOG(options_.log, Error, "{}", error);
+                failure = std::move(error);
                 return false;
             }
+        }
+
+        events_.push(ready_event());
+        for (const std::string& warning : result.summary.warnings)
+        {
+            events_.push(warning_event(warning));
+        }
+        if (external == nullptr)
+        {
+            // The one-shot snapshot is not needed while watching; release it
+            // before parking on the queue so large libraries do not stay
+            // resident for the watcher's lifetime.
+            local = {};
         }
 
         SAUCE_FS_LOG(options_.log, Info, "watching {} root(s); press Ctrl+C to stop",
@@ -177,23 +282,111 @@ struct ArchiveIndexWatcher::Impl final : private efsw::FileWatchListener
                 missed_events_ = false;
             }
 
+            detail::WatchRefreshSummary summary;
             std::string error;
-            if (!refresh(result, dirty, reparse, missed, error))
+            if (!detail::refresh_watch_index(options_, watch_.verbose, dirty, reparse, missed,
+                                             summary, error))
             {
                 SAUCE_FS_LOG(options_.log, Error, "{}", error);
+                failure = std::move(error);
                 return false;
             }
+            publish(summary);
         }
         return true;
     }
 
-    void stop() noexcept
+    void publish(const detail::WatchRefreshSummary& summary)
     {
-        stopping_.store(true);
-        event_ready_.notify_all();
+        if (!summary.committed)
+        {
+            return;
+        }
+
+        for (const std::string& path : summary.added)
+        {
+            events_.push(archive_event(WatchEventKind::ArchiveAdded, path));
+        }
+        for (const std::string& path : summary.changed)
+        {
+            events_.push(archive_event(WatchEventKind::ArchiveChanged, path));
+        }
+        for (const std::string& path : summary.removed)
+        {
+            events_.push(archive_event(WatchEventKind::ArchiveRemoved, path));
+        }
+
+        WatchEvent updated;
+        updated.kind = WatchEventKind::IndexUpdated;
+        updated.added = summary.added.size();
+        updated.changed = summary.changed.size();
+        updated.removed = summary.removed.size();
+        updated.loose_added = summary.loose_added;
+        updated.loose_removed = summary.loose_removed;
+        events_.push(std::move(updated));
+
+        for (const std::string& path : summary.unreadable)
+        {
+            events_.push(warning_event(path + " (unreadable; kept previous index rows)"));
+        }
+        for (const std::string& warning : summary.warnings)
+        {
+            events_.push(warning_event(warning));
+        }
     }
 
-private:
+    static WatchEvent archive_event(WatchEventKind kind, std::string path)
+    {
+        WatchEvent event;
+        event.kind = kind;
+        event.path = std::move(path);
+        return event;
+    }
+
+    static WatchEvent warning_event(std::string message)
+    {
+        WatchEvent event;
+        event.kind = WatchEventKind::Warning;
+        event.message = std::move(message);
+        return event;
+    }
+
+    static WatchEvent failure_event(std::string message)
+    {
+        WatchEvent event;
+        event.kind = WatchEventKind::Failed;
+        event.message = std::move(message);
+        return event;
+    }
+
+    static WatchEvent ready_event()
+    {
+        WatchEvent event;
+        event.kind = WatchEventKind::IndexReady;
+        return event;
+    }
+
+    static WatchEvent stop_event()
+    {
+        WatchEvent event;
+        event.kind = WatchEventKind::Stopped;
+        return event;
+    }
+
+    void remove_watches()
+    {
+        if (!watcher_)
+        {
+            return;
+        }
+        for (const efsw::WatchID id : watch_ids_)
+        {
+            watcher_->removeWatch(id);
+        }
+        watch_ids_.clear();
+        watcher_.reset();
+    }
+
     void mark_dirty(const fs::path& path)
     {
         const fs::path absolute = absolute_normalized(path);
@@ -263,282 +456,15 @@ private:
         event_ready_.notify_one();
     }
 
-    bool refresh(ArchiveIndexResult&, const std::set<std::string>& dirty,
-                 const std::set<std::string>& reparse, bool force_all, std::string& error)
-    {
-        ScanPlan plan = collect_scan_plan(options_);
-        std::unordered_map<std::string, StoredArchive> existing;
-        if (!read_archive_rows(options_.database, existing, error))
-        {
-            return false;
-        }
-
-        const std::vector<Candidate>& candidates = plan.candidates;
-        std::vector<ArchiveRecord> records(candidates.size());
-        std::vector<std::uint8_t> need_hash(candidates.size(), 0);
-        std::vector<std::uint8_t> hashed(candidates.size(), 0);
-        std::vector<std::uint8_t> replace(candidates.size(), 0);
-        std::vector<std::string> hashing_errors(candidates.size());
-        std::vector<std::vector<ArchiveContent>> content_lists(candidates.size());
-        std::vector<std::vector<std::string>> content_warnings(candidates.size());
-        std::vector<std::uint8_t> existed(candidates.size(), 0);
-
-        bool forced_any = false;
-        std::size_t changed_count = 0;
-        std::size_t added_count = 0;
-        for (std::size_t index = 0; index < candidates.size(); ++index)
-        {
-            const Candidate& candidate = candidates[index];
-            ArchiveRecord& record = records[index];
-            record.path = candidate.path.generic_string();
-            record.game_path = candidate.game_path;
-            record.mount_path = candidate.mount_path;
-            record.stem = candidate.path.stem().string();
-            record.variant = candidate.variant;
-            record.size = candidate.size;
-            record.modified = candidate.modified;
-
-            const auto found = existing.find(record.path);
-            if (found == existing.end())
-            {
-                need_hash[index] = 1;
-                ++added_count;
-                continue;
-            }
-            existed[index] = 1;
-            record.hash = found->second.hash_value;
-            // Metadata is only reparsed when the file changed, so keep the
-            // stored values for unchanged archives.
-            record.addon_name = found->second.addon_name;
-            record.addon_description = found->second.addon_description;
-            record.addon_author = found->second.addon_author;
-            record.addon_version = found->second.addon_version;
-            record.steamid64 = found->second.steamid64;
-            record.timestamp = found->second.timestamp;
-            const bool forced = force_all || dirty.find(record.path) != dirty.end();
-            if (forced)
-            {
-                forced_any = true;
-            }
-            if (!forced && found->second.size == candidate.size &&
-                found->second.modified == candidate.modified &&
-                found->second.archive_type_id == archive_type_id(candidate.variant))
-            {
-                continue;
-            }
-            need_hash[index] = 1;
-            ++changed_count;
-        }
-
-        std::unordered_map<std::string, LooseEntry> existing_loose;
-        if (!read_loose_rows(options_.database, existing_loose, error))
-        {
-            return false;
-        }
-
-        DatabaseDelta loose_delta;
-        std::unordered_set<std::string> desired_loose;
-        desired_loose.reserve(plan.loose.size());
-        for (const LooseEntry& entry : plan.loose)
-        {
-            const std::string key = loose_key(entry);
-            desired_loose.insert(key);
-            const auto found = existing_loose.find(key);
-            if (found == existing_loose.end() || found->second.directory != entry.directory ||
-                found->second.size != entry.size || found->second.modified != entry.modified)
-            {
-                loose_delta.loose.push_back(entry);
-            }
-        }
-        for (const auto& [key, entry] : existing_loose)
-        {
-            (void)entry;
-            if (desired_loose.find(key) == desired_loose.end())
-            {
-                loose_delta.loose_removed.push_back(key);
-            }
-        }
-
-        bool metadata_dirty = force_all;
-        for (const std::string& path : dirty)
-        {
-            const std::string name = fs::path(path).filename().string();
-            if (parsers::ascii_iequals(name, "gameinfo.txt") ||
-                parsers::ascii_iequals(name, "gameinfo.gi") ||
-                parsers::ascii_iequals(name, "mount.cfg"))
-            {
-                metadata_dirty = true;
-                break;
-            }
-        }
-
-        const bool loose_changed = !loose_delta.loose.empty() || !loose_delta.loose_removed.empty();
-        if (!forced_any && added_count == 0 && changed_count == 0 &&
-            existing.size() == candidates.size() && !loose_changed && !metadata_dirty)
-        {
-            return true;
-        }
-
-        const std::size_t hash_workers =
-            std::max<std::size_t>(1, std::thread::hardware_concurrency());
-        if (std::find(need_hash.begin(), need_hash.end(), std::uint8_t{1}) != need_hash.end())
-        {
-            ThreadPool pool(hash_workers);
-            for (std::size_t index = 0; index < candidates.size(); ++index)
-            {
-                if (need_hash[index] == 0)
-                {
-                    continue;
-                }
-                pool.submit(
-                    [&candidates, &records, &hashed, &replace, &hashing_errors, &content_lists,
-                     &content_warnings, &existing, &reparse, force_all, index]
-                    {
-                        const Candidate& candidate = candidates[index];
-                        ArchiveRecord& record = records[index];
-                        if (!compute_hash(candidate.path, record.hash, hashing_errors[index]))
-                        {
-                            return;
-                        }
-                        const auto found = existing.find(record.path);
-                        const bool same_contents =
-                            found != existing.end() && found->second.hash_value == record.hash &&
-                            found->second.archive_type_id == archive_type_id(candidate.variant);
-                        // A side archive event forces a parse even when the
-                        // directory file itself is byte-identical: entries can
-                        // have appeared or disappeared with the side file.
-                        if (force_all || reparse.find(record.path) != reparse.end() ||
-                            !same_contents)
-                        {
-                            scan_contents(candidate.path, record, content_lists[index],
-                                          content_warnings[index]);
-                            replace[index] = 1;
-                        }
-                        hashed[index] = 1;
-                    });
-            }
-            try
-            {
-                pool.wait();
-            }
-            catch (const std::exception& exception)
-            {
-                error = std::string("worker failed: ") + exception.what();
-                return false;
-            }
-        }
-
-        DatabaseDelta delta;
-        delta.games = plan.games;
-        delta.loose = std::move(loose_delta.loose);
-        delta.loose_removed = std::move(loose_delta.loose_removed);
-        std::unordered_set<std::string> desired;
-        desired.reserve(records.size());
-        std::vector<std::string> added;
-        std::vector<std::string> changed;
-        std::vector<std::string> failed;
-
-        for (std::size_t index = 0; index < candidates.size(); ++index)
-        {
-            const Candidate& candidate = candidates[index];
-            ArchiveRecord& record = records[index];
-            if (need_hash[index] != 0 && hashed[index] == 0)
-            {
-                failed.push_back(record.path);
-                if (existed[index] != 0)
-                {
-                    // Keep the old rows: a transient read failure (a game
-                    // updater writing the archive) must not delete a mount.
-                    // Preserve the old signature so the next rescan retries.
-                    const auto found = existing.find(record.path);
-                    record.hash = found->second.hash_value;
-                    record.size = found->second.size;
-                    record.modified = found->second.modified;
-                    delta.archives.push_back(std::move(record));
-                    desired.insert(candidate.path.generic_string());
-                }
-                continue;
-            }
-
-            desired.insert(record.path);
-            if (existed[index] == 0)
-            {
-                added.push_back(record.path);
-            }
-            else if (need_hash[index] != 0)
-            {
-                const auto found = existing.find(record.path);
-                if (found->second.hash_value != record.hash ||
-                    found->second.size != candidate.size ||
-                    found->second.modified != candidate.modified ||
-                    found->second.archive_type_id != archive_type_id(candidate.variant))
-                {
-                    changed.push_back(record.path);
-                }
-            }
-            if (replace[index] != 0)
-            {
-                delta.replaced.emplace(record.path, std::move(content_lists[index]));
-            }
-            delta.archives.push_back(std::move(record));
-        }
-
-        for (const auto& [path, row] : existing)
-        {
-            (void)row;
-            if (desired.find(path) == desired.end())
-            {
-                delta.removed.push_back(path);
-            }
-        }
-
-        std::vector<std::string> parse_warnings;
-        for (std::vector<std::string>& warnings : content_warnings)
-        {
-            parse_warnings.insert(parse_warnings.end(), std::make_move_iterator(warnings.begin()),
-                                  std::make_move_iterator(warnings.end()));
-        }
-
-        const bool has_changes = !delta.removed.empty() || !delta.replaced.empty() ||
-                                 !added.empty() || !changed.empty() || forced_any || force_all ||
-                                 !delta.loose.empty() || !delta.loose_removed.empty() ||
-                                 metadata_dirty;
-        if (has_changes && !apply_database_delta(options_.database, delta, error))
-        {
-            return false;
-        }
-
-        if (watch_.verbose &&
-            (!added.empty() || !changed.empty() || !delta.removed.empty() || !failed.empty() ||
-             !parse_warnings.empty() || !delta.loose.empty() || !delta.loose_removed.empty()))
-        {
-            SAUCE_FS_LOG(options_.log, Info,
-                         "index updated: +{} added, -{} removed, ~{} changed, "
-                         "loose +{} -{}",
-                         added.size(), delta.removed.size(), changed.size(), delta.loose.size(),
-                         delta.loose_removed.size());
-            log_paths(options_.log, "+", added);
-            log_paths(options_.log, "~", changed);
-            log_paths(options_.log, "-", delta.removed);
-            for (const std::string& path : failed)
-            {
-                (void)path;
-                SAUCE_FS_LOG(options_.log, Warning, "{} (unreadable; kept previous index rows)",
-                             path);
-            }
-            const std::size_t warning_limit = std::min<std::size_t>(parse_warnings.size(), 5);
-            for (std::size_t index = 0; index < warning_limit; ++index)
-            {
-                SAUCE_FS_LOG(options_.log, Warning, "{}", parse_warnings[index]);
-            }
-        }
-        return true;
-    }
-
     ArchiveIndexOptions options_;
     ArchiveWatchOptions watch_;
-    efsw::FileWatcher watcher_;
+    std::unique_ptr<efsw::FileWatcher> watcher_;
     std::vector<efsw::WatchID> watch_ids_;
+
+    std::mutex lifecycle_mutex_;
+    std::thread worker_;
+    std::atomic<bool> running_{false};
+
     std::mutex event_mutex_;
     std::condition_variable event_ready_;
     std::set<std::string> dirty_paths_;
@@ -547,13 +473,47 @@ private:
     bool dirty_ = false;
     bool missed_events_ = false;
     std::atomic<bool> stopping_{false};
+
+    detail::WatchEventQueue events_;
 };
+
 ArchiveIndexWatcher::ArchiveIndexWatcher(ArchiveIndexOptions options, ArchiveWatchOptions watch)
     : impl_(std::make_unique<Impl>(std::move(options), watch))
 {
 }
 
 ArchiveIndexWatcher::~ArchiveIndexWatcher() = default;
+
+bool ArchiveIndexWatcher::start()
+{
+    return impl_->start();
+}
+
+std::optional<WatchEvent> ArchiveIndexWatcher::pollEvent()
+{
+    return impl_->poll_event();
+}
+
+std::optional<WatchEvent>
+ArchiveIndexWatcher::waitEvent(std::optional<std::chrono::milliseconds> timeout)
+{
+    return impl_->wait_event(timeout);
+}
+
+std::optional<WatchEvent> ArchiveIndexWatcher::waitEvent()
+{
+    return impl_->wait_event(std::nullopt);
+}
+
+std::vector<WatchEvent> ArchiveIndexWatcher::drainEvents()
+{
+    return impl_->drain_events();
+}
+
+bool ArchiveIndexWatcher::running() const noexcept
+{
+    return impl_->running();
+}
 
 bool ArchiveIndexWatcher::run(ArchiveIndexResult& result)
 {
@@ -564,4 +524,5 @@ void ArchiveIndexWatcher::stop() noexcept
 {
     impl_->stop();
 }
+
 } // namespace sauce::fs::core

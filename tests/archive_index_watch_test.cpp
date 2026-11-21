@@ -6,6 +6,7 @@
 #include <fstream>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -434,6 +435,105 @@ int main()
     if (!watcher_result)
     {
         return fail("watcher returned an error");
+    }
+
+    // The asynchronous API reports the same work through its event queue:
+    // IndexReady once the initial build is committed, then per-archive plus
+    // IndexUpdated events, and Stopped when the worker exits.
+    {
+        sauce::fs::core::ArchiveIndexWatcher events_watcher(options, watch);
+        if (!events_watcher.start() || !events_watcher.running())
+        {
+            return fail("start() did not launch the worker");
+        }
+
+        auto next_event =
+            [&](sauce::fs::core::WatchEventKind kind,
+                std::chrono::milliseconds timeout) -> std::optional<sauce::fs::core::WatchEvent>
+        {
+            const auto deadline = std::chrono::steady_clock::now() + timeout;
+            for (;;)
+            {
+                const auto now = std::chrono::steady_clock::now();
+                if (now >= deadline)
+                {
+                    return std::nullopt;
+                }
+                auto event = events_watcher.waitEvent(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now));
+                if (!event)
+                {
+                    return std::nullopt;
+                }
+                if (event->kind == kind)
+                {
+                    return event;
+                }
+            }
+        };
+
+        if (!next_event(sauce::fs::core::WatchEventKind::IndexReady, 20s))
+        {
+            events_watcher.stop();
+            return fail("start() did not report IndexReady");
+        }
+
+        // Give efsw a moment to install its watches, as in the run() section.
+        std::this_thread::sleep_for(500ms);
+
+        // side_dir.vpk exists in the rebuilt index, so replacing it must be a
+        // change rather than an addition.
+        if (!write_file(side_dir, make_vpk("side v4")))
+        {
+            events_watcher.stop();
+            return fail("cannot rewrite fixture for event test");
+        }
+
+        bool changed = false;
+        bool updated = false;
+        const auto event_deadline = std::chrono::steady_clock::now() + 10s;
+        while (std::chrono::steady_clock::now() < event_deadline)
+        {
+            auto event = events_watcher.waitEvent(500ms);
+            if (!event)
+            {
+                continue;
+            }
+            if (event->kind == sauce::fs::core::WatchEventKind::ArchiveChanged &&
+                event->path == side_dir.generic_string())
+            {
+                changed = true;
+            }
+            if (event->kind == sauce::fs::core::WatchEventKind::IndexUpdated)
+            {
+                updated = event->changed >= 1;
+                break;
+            }
+        }
+        if (!changed || !updated)
+        {
+            events_watcher.stop();
+            return fail("start() did not report an archive change");
+        }
+
+        events_watcher.stop();
+        if (events_watcher.running())
+        {
+            return fail("running() stayed true after stop()");
+        }
+
+        bool stopped = false;
+        while (auto event = events_watcher.pollEvent())
+        {
+            if (event->kind == sauce::fs::core::WatchEventKind::Stopped)
+            {
+                stopped = true;
+            }
+        }
+        if (!stopped)
+        {
+            return fail("stop() did not queue a Stopped event");
+        }
     }
 
     fs::remove_all(root, ec);
