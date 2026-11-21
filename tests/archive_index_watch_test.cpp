@@ -536,6 +536,64 @@ int main()
         }
     }
 
+    // Reusing an existing database skips the full build and reconciles it
+    // before reporting readiness.
+    {
+        sauce::fs::core::ArchiveWatchOptions reuse = watch;
+        reuse.initial_build = false;
+        sauce::fs::core::ArchiveIndexWatcher reuse_watcher(options, reuse);
+        if (!reuse_watcher.start())
+        {
+            return fail("initial_build=false watcher did not start");
+        }
+
+        bool ready = false;
+        const auto deadline = std::chrono::steady_clock::now() + 20s;
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            auto event = reuse_watcher.waitEvent(250ms);
+            if (!event)
+            {
+                continue;
+            }
+            if (event->kind == sauce::fs::core::WatchEventKind::Failed)
+            {
+                reuse_watcher.stop();
+                return fail("initial_build=false watcher reported a failure");
+            }
+            if (event->kind == sauce::fs::core::WatchEventKind::IndexReady)
+            {
+                ready = true;
+                break;
+            }
+        }
+        if (!ready)
+        {
+            reuse_watcher.stop();
+            return fail("initial_build=false watcher was not ready");
+        }
+
+        auto reopened = sauce::fs::core::IndexDatabase::open(database);
+        if (!reopened)
+        {
+            reuse_watcher.stop();
+            return fail("existing database could not be reopened");
+        }
+        auto provider = (*reopened)->game_provider("game");
+        if (!provider)
+        {
+            reuse_watcher.stop();
+            return fail("existing game provider could not be built");
+        }
+        if (!(*provider)->get("materials/foo.vmt"))
+        {
+            reuse_watcher.stop();
+            return fail("reused database lost its archive entries");
+        }
+
+        reuse_watcher.stop();
+    }
+
     fs::remove_all(root, ec);
     return 0;
 }

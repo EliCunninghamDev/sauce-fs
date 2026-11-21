@@ -181,12 +181,27 @@ private:
 
         ArchiveIndexResult local;
         ArchiveIndexResult& result = external != nullptr ? *external : local;
-        const bool built = build_from_plan(options_, plan, result);
-        detail::log_index_summary(options_.log, result, options_.database);
-        if (!built)
+
+        std::error_code database_error;
+        const bool use_existing = !watch_.initial_build &&
+                                  fs::is_regular_file(options_.database, database_error) &&
+                                  !database_error;
+        if (use_existing)
         {
-            failure = result.error.empty() ? "initial index build failed" : result.error;
-            return false;
+            // The first reconcile below upgrades or adds only what changed since
+            // the stored snapshot, which is much cheaper than reparsing every
+            // archive on each launch.
+            SAUCE_FS_LOG(options_.log, Info, "using existing index {}", options_.database.string());
+        }
+        else
+        {
+            const bool built = build_from_plan(options_, plan, result);
+            detail::log_index_summary(options_.log, result, options_.database);
+            if (!built)
+            {
+                failure = result.error.empty() ? "initial index build failed" : result.error;
+                return false;
+            }
         }
 
         watcher_ = std::make_unique<efsw::FileWatcher>();

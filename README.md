@@ -318,12 +318,15 @@ for (;;)
 watcher.stop();
 ```
 
-`start()` is asynchronous: `IndexReady` means the initial full build and the
-post-watch reconcile are both committed, so a consumer does not need a separate
-one-shot build. Each incremental commit publishes per-archive `ArchiveAdded`,
-`ArchiveChanged`, and `ArchiveRemoved` events, followed by an `IndexUpdated`
-summary. Events are emitted only after a successful SQLite commit and carry
-values, so no watcher lock is held while a consumer processes one.
+`start()` is asynchronous: `IndexReady` means the initial build (or, with
+`ArchiveWatchOptions::initial_build = false` and an existing database, the
+reconcile) is committed and the roots are being watched, so a consumer does not
+need a separate one-shot build. Pass `initial_build = false` when an existing
+index should be reused across launches; only archives whose size or modification
+time changed are rehashed. Each incremental commit publishes per-archive
+`ArchiveAdded`, `ArchiveChanged`, and `ArchiveRemoved` events, followed by an
+`IndexUpdated` summary. Events are emitted only after a successful SQLite commit
+and carry values, so no watcher lock is held while a consumer processes one.
 
 The queue is bounded by `ArchiveWatchOptions::max_queued_events`; on overflow,
 repeated `(kind, path)` events are coalesced, one `EventsDropped` marker is

@@ -475,6 +475,16 @@ struct ArchiveWatchOptions
     /// \brief Emit an Info message for each archive added, removed, or changed.
     bool verbose = true;
 
+    /// \brief Run a full build before watching.
+    ///
+    /// \details When \c false and \ref ArchiveIndexOptions::database already
+    /// exists, the watcher only reconciles the stored rows with the current
+    /// archives before reporting WatchEventKind::IndexReady. Unchanged archives
+    /// are still skipped, so startup is proportional to the directory walk
+    /// rather than to hashing and parsing every archive. A missing database
+    /// still triggers a full build.
+    bool initial_build = true;
+
     /// \brief Maximum number of events retained for consumers.
     ///
     /// When the queue is full, another event with the same kind and path is

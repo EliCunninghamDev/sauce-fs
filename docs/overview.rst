@@ -112,6 +112,11 @@ background thread and read semantic events:
    }
    watcher.stop();
 
+Set ``ArchiveWatchOptions::initial_build`` to ``false`` to reuse an existing
+database across launches: the watcher reconciles rows before reporting
+``IndexReady`` and only rehashes archives whose size or modification time
+changed. A missing database still triggers a full build.
+
 Events are published only after a successful SQLite commit. The queue is bounded
 by :cpp:member:`sauce::fs::core::ArchiveWatchOptions::max_queued_events`, which
 reports overflow through an ``EventsDropped`` marker while never dropping
