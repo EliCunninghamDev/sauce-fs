@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 
-#include "index/sqlite_util.hpp"
+#include "core/sqlite_util.hpp"
 
 #include <sqlite3.h>
 
-#include "index/archive_sql.hpp"
+#include "core/archive_sql.hpp"
 
-namespace sauce::fs::sqlite
+namespace sauce::fs::core::sqlite
 {
 
 void DatabaseCloser::operator()(sqlite3* database) const noexcept
@@ -143,4 +143,4 @@ void rollback(sqlite3* database)
     exec_if_possible(database, sql::kRollback);
 }
 
-} // namespace sauce::fs::sqlite
+} // namespace sauce::fs::core::sqlite

@@ -11,7 +11,7 @@
 #include <string_view>
 #include <vector>
 
-namespace sauce::fs
+namespace sauce::fs::core
 {
 
 /// Kind of main archive indexed in the database.
@@ -223,4 +223,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace sauce::fs
+} // namespace sauce::fs::core

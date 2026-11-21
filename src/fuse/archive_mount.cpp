@@ -2,7 +2,7 @@
 
 #define FUSE_USE_VERSION 34
 
-#include "mount/archive_mount.hpp"
+#include "fuse/archive_mount.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -26,30 +26,34 @@
 #include <fuse3/fuse.h>
 #include <xxhash.h>
 
-#include "index/archive_access.hpp"
+#include "core/archive_access.hpp"
 
-namespace sauce::fs
+namespace sauce::fs::fuse
 {
+
+namespace core = ::sauce::fs::core;
 
 namespace
 {
 
 struct OpenFile
 {
-    Blob blob;
+    core::Blob blob;
 };
 
 struct MountState
 {
-    std::shared_ptr<IndexDatabase> database;
-    ProviderPtr root;
+    std::shared_ptr<core::IndexDatabase> database;
+    core::ProviderPtr root;
     std::time_t mount_time = 0;
+    unsigned file_mode = 0444;
+    unsigned dir_mode = 0555;
     mutable std::mutex root_mutex;
 
     /// Pick up an index update committed by sauce-fs-index --watch. The
     /// database object notices the new PRAGMA data_version and reloads its
     /// metadata; the tree is rebuilt only when that happens.
-    ProviderPtr current_root()
+    core::ProviderPtr current_root()
     {
         std::lock_guard lock(root_mutex);
         auto changed = database->refresh();
@@ -77,28 +81,28 @@ ino_t inode_for(const char* path)
     return static_cast<ino_t>(hash == 0 ? 1 : hash);
 }
 
-int errno_for(const Error& error)
+int errno_for(const core::Error& error)
 {
     switch (error.code)
     {
-    case ErrorCode::NotFound:
+    case core::ErrorCode::NotFound:
         return -ENOENT;
-    case ErrorCode::InvalidPath:
+    case core::ErrorCode::InvalidPath:
         return -EINVAL;
-    case ErrorCode::NotAFile:
+    case core::ErrorCode::NotAFile:
         return -EISDIR;
-    case ErrorCode::NotADirectory:
+    case core::ErrorCode::NotADirectory:
         return -ENOTDIR;
-    case ErrorCode::Io:
-    case ErrorCode::Unsupported:
-    case ErrorCode::Database:
-    case ErrorCode::NotSupported:
+    case core::ErrorCode::Io:
+    case core::ErrorCode::Unsupported:
+    case core::ErrorCode::Database:
+    case core::ErrorCode::NotSupported:
         return -EIO;
     }
     return -EIO;
 }
 
-void fill_stat(const MountState& state, const char* path, const NodeInfo& info,
+void fill_stat(const MountState& state, const char* path, const core::NodeInfo& info,
                struct stat& attributes)
 {
     std::memset(&attributes, 0, sizeof attributes);
@@ -109,14 +113,14 @@ void fill_stat(const MountState& state, const char* path, const NodeInfo& info,
     attributes.st_blksize = 4096;
     attributes.st_ino = std::strcmp(path, "/") == 0 ? 1 : inode_for(path);
 
-    if (info.kind == NodeInfo::Kind::Directory)
+    if (info.kind == core::NodeInfo::Kind::Directory)
     {
-        attributes.st_mode = S_IFDIR | 0555;
+        attributes.st_mode = S_IFDIR | state.dir_mode;
         attributes.st_nlink = 2;
         return;
     }
 
-    attributes.st_mode = S_IFREG | 0444;
+    attributes.st_mode = S_IFREG | state.file_mode;
     attributes.st_nlink = 1;
     attributes.st_size = static_cast<off_t>(info.size);
     attributes.st_blocks = static_cast<blkcnt_t>((info.size + 511) / 512);
@@ -127,7 +131,7 @@ int do_getattr(const char* path, struct stat* attributes, struct fuse_file_info*
     try
     {
         MountState* state = state_of();
-        ProviderPtr root = state->current_root();
+        core::ProviderPtr root = state->current_root();
         if (!root)
         {
             return -EIO;
@@ -152,7 +156,7 @@ int do_readdir(const char* path, void* buffer, fuse_fill_dir_t fill, off_t, stru
     try
     {
         MountState* state = state_of();
-        ProviderPtr root = state->current_root();
+        core::ProviderPtr root = state->current_root();
         if (!root)
         {
             return -EIO;
@@ -166,7 +170,7 @@ int do_readdir(const char* path, void* buffer, fuse_fill_dir_t fill, off_t, stru
         { return fill(buffer, name.c_str(), nullptr, 0, static_cast<fuse_fill_dir_flags>(0)); };
         emit(".");
         emit("..");
-        for (const DirectoryEntry& entry : *entries)
+        for (const core::DirectoryEntry& entry : *entries)
         {
             if (emit(entry.name) != 0)
             {
@@ -190,7 +194,7 @@ int do_open(const char* path, struct fuse_file_info* file)
     try
     {
         MountState* state = state_of();
-        ProviderPtr root = state->current_root();
+        core::ProviderPtr root = state->current_root();
         if (!root)
         {
             return -EIO;
@@ -200,7 +204,7 @@ int do_open(const char* path, struct fuse_file_info* file)
         {
             return errno_for(info.error());
         }
-        if (info->kind == NodeInfo::Kind::Directory)
+        if (info->kind == core::NodeInfo::Kind::Directory)
         {
             return -EISDIR;
         }
@@ -237,7 +241,7 @@ int do_read(const char*, char* buffer, size_t size, off_t offset, struct fuse_fi
     {
         return -EIO;
     }
-    const Bytes& data = *open->blob;
+    const core::Bytes& data = *open->blob;
     if (static_cast<std::uint64_t>(offset) >= data.size())
     {
         return 0;
@@ -275,7 +279,7 @@ int do_statfs(const char*, struct statvfs* info)
 
 int run_archive_mount(const ArchiveMountOptions& options, const std::filesystem::path& mountpoint)
 {
-    auto database = IndexDatabase::open(options.database);
+    auto database = core::IndexDatabase::open(options.database);
     if (!database)
     {
         sauce::fs::print_error("sauce-fs-mount: {}\n", database.error().message);
@@ -292,6 +296,8 @@ int run_archive_mount(const ArchiveMountOptions& options, const std::filesystem:
     state.database = std::move(*database);
     state.root = std::move(*root);
     state.mount_time = std::time(nullptr);
+    state.file_mode = options.file_mode;
+    state.dir_mode = options.dir_mode;
 
     struct fuse_operations operations = {};
     operations.getattr = do_getattr;
@@ -324,4 +330,4 @@ int run_archive_mount(const ArchiveMountOptions& options, const std::filesystem:
     return fuse_main(static_cast<int>(arguments.size()), arguments.data(), &operations, &state);
 }
 
-} // namespace sauce::fs
+} // namespace sauce::fs::fuse

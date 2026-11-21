@@ -11,7 +11,7 @@
 #include <thread>
 #include <vector>
 
-namespace sauce::fs
+namespace sauce::fs::core
 {
 
 /// Fixed-size cross-platform worker pool.
@@ -48,4 +48,4 @@ private:
     bool stopping_ = false;
 };
 
-} // namespace sauce::fs
+} // namespace sauce::fs::core

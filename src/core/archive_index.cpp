@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-#include "index/archive_index.hpp"
+#include "core/archive_index.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -13,15 +13,15 @@
 #include <utility>
 #include <vector>
 
-#include "index/archive_build.hpp"
-#include "index/archive_constants.hpp"
-#include "index/archive_discovery.hpp"
-#include "index/archive_scan.hpp"
-#include "index/archive_store.hpp"
-#include "index/thread_pool.hpp"
+#include "core/archive_build.hpp"
+#include "core/archive_constants.hpp"
+#include "core/archive_discovery.hpp"
+#include "core/archive_scan.hpp"
+#include "core/archive_store.hpp"
+#include "core/thread_pool.hpp"
 #include "util/format.hpp"
 
-namespace sauce::fs
+namespace sauce::fs::core
 {
 
 namespace
@@ -235,4 +235,4 @@ void print_archive_index_summary(const ArchiveIndexResult& result,
     }
 }
 
-} // namespace sauce::fs
+} // namespace sauce::fs::core

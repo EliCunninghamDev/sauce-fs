@@ -8,9 +8,9 @@
 #include <string>
 #include <vector>
 
-#include "index/archive_index.hpp"
+#include "core/archive_index.hpp"
 
-namespace sauce::fs
+namespace sauce::fs::core
 {
 
 /// One archive candidate found on disk, before it is hashed or opened.
@@ -41,4 +41,4 @@ std::filesystem::path absolute_normalized(const std::filesystem::path& path);
 /// Discover games, archive candidates, and watch roots for one scan.
 ScanPlan collect_scan_plan(const ArchiveIndexOptions& options);
 
-} // namespace sauce::fs
+} // namespace sauce::fs::core

@@ -8,9 +8,9 @@
 #include <string_view>
 #include <vector>
 
-#include "index/archive_index.hpp"
+#include "core/archive_index.hpp"
 
-namespace sauce::fs
+namespace sauce::fs::core
 {
 
 /// Hash an archive file with XXH3-64.
@@ -27,4 +27,4 @@ std::uint64_t parse_hash_hex(std::string_view text);
 void scan_contents(const std::filesystem::path& path, ArchiveRecord& record,
                    std::vector<ArchiveContent>& contents, std::vector<std::string>& warnings);
 
-} // namespace sauce::fs
+} // namespace sauce::fs::core

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-#include "index/archive_scan.hpp"
+#include "core/archive_scan.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -19,7 +19,7 @@
 #include "parsers/gma.hpp"
 #include "parsers/vpk.hpp"
 
-namespace sauce::fs
+namespace sauce::fs::core
 {
 
 namespace
@@ -282,4 +282,4 @@ void scan_contents(const fs::path& path, ArchiveRecord& record,
 /// archive extension replaced by a sibling directory, e.g. `maps/foo.bsp` ->
 /// `maps/foo`, `hl2_misc_dir.vpk` -> `hl2_misc`, `addons/foo.gma` ->
 /// `addons/foo`. Keeping the parent path avoids collisions between archives
-} // namespace sauce::fs
+} // namespace sauce::fs::core

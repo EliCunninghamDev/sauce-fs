@@ -12,7 +12,7 @@
 #include <string_view>
 #include <vector>
 
-namespace sauce::fs
+namespace sauce::fs::core
 {
 
 enum class ErrorCode : std::uint8_t
@@ -251,4 +251,4 @@ private:
     std::map<std::string, Child> children_;
 };
 
-} // namespace sauce::fs
+} // namespace sauce::fs::core

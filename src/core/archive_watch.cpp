@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-#include "index/archive_index.hpp"
+#include "core/archive_index.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -22,16 +22,16 @@
 
 #include <efsw/efsw.hpp>
 
-#include "index/archive_build.hpp"
-#include "index/archive_constants.hpp"
-#include "index/archive_discovery.hpp"
-#include "index/archive_scan.hpp"
-#include "index/archive_store.hpp"
-#include "index/thread_pool.hpp"
+#include "core/archive_build.hpp"
+#include "core/archive_constants.hpp"
+#include "core/archive_discovery.hpp"
+#include "core/archive_scan.hpp"
+#include "core/archive_store.hpp"
+#include "core/thread_pool.hpp"
 #include "parsers/vpk.hpp"
 #include "util/format.hpp"
 
-namespace sauce::fs
+namespace sauce::fs::core
 {
 
 namespace fs = std::filesystem;
@@ -484,4 +484,4 @@ void ArchiveIndexWatcher::stop() noexcept
 {
     impl_->stop();
 }
-} // namespace sauce::fs
+} // namespace sauce::fs::core

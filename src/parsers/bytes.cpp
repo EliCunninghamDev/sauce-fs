@@ -146,6 +146,12 @@ std::uint32_t crc32_update(std::uint32_t crc, const void* data, std::size_t leng
     return ~crc;
 }
 
+std::uint16_t load_le16(const std::uint8_t* data) noexcept
+{
+    return static_cast<std::uint16_t>(static_cast<std::uint32_t>(data[0]) |
+                                      (static_cast<std::uint32_t>(data[1]) << 8));
+}
+
 std::uint32_t load_le32(const std::uint8_t* data) noexcept
 {
     return static_cast<std::uint32_t>(data[0]) | (static_cast<std::uint32_t>(data[1]) << 8) |
@@ -462,8 +468,7 @@ bool Cursor::u16(std::uint16_t& value)
     {
         return false;
     }
-    value = static_cast<std::uint16_t>(p[0]) |
-            static_cast<std::uint16_t>(static_cast<std::uint16_t>(p[1]) << 8);
+    value = load_le16(p);
     return true;
 }
 
@@ -474,8 +479,7 @@ bool Cursor::u32(std::uint32_t& value)
     {
         return false;
     }
-    value = static_cast<std::uint32_t>(p[0]) | (static_cast<std::uint32_t>(p[1]) << 8) |
-            (static_cast<std::uint32_t>(p[2]) << 16) | (static_cast<std::uint32_t>(p[3]) << 24);
+    value = load_le32(p);
     return true;
 }
 

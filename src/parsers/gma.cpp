@@ -209,9 +209,7 @@ bool parse_gma_reader(Reader& file, const std::string& label, std::vector<Scanne
             }
             return false;
         }
-        const std::uint32_t index =
-            static_cast<std::uint32_t>(raw[0]) | (static_cast<std::uint32_t>(raw[1]) << 8) |
-            (static_cast<std::uint32_t>(raw[2]) << 16) | (static_cast<std::uint32_t>(raw[3]) << 24);
+        const std::uint32_t index = load_le32(raw);
         if (index == 0)
         {
             break;
@@ -233,16 +231,8 @@ bool parse_gma_reader(Reader& file, const std::string& label, std::vector<Scanne
             }
             return false;
         }
-        std::uint64_t size_bits = 0;
-        for (int i = 0; i < 8; ++i)
-        {
-            size_bits |= static_cast<std::uint64_t>(size_raw[i]) << (i * 8);
-        }
-        size = static_cast<std::int64_t>(size_bits);
-        crc = static_cast<std::uint32_t>(crc_raw[0]) |
-              (static_cast<std::uint32_t>(crc_raw[1]) << 8) |
-              (static_cast<std::uint32_t>(crc_raw[2]) << 16) |
-              (static_cast<std::uint32_t>(crc_raw[3]) << 24);
+        size = static_cast<std::int64_t>(load_le64(size_raw));
+        crc = load_le32(crc_raw);
         if (size < 0)
         {
             if (error)

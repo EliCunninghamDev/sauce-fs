@@ -1,7 +1,7 @@
 {
   "name": "sauce-fs",
   "version": "0.1.0",
-  "description": "Read-only virtual filesystem backed by a compressed, checksummed manifest",
+  "description": "Read-only access to Source engine content archives",
   "dependencies": [
     "efsw",
     "fmt",

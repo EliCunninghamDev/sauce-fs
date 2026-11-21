@@ -10,8 +10,8 @@
 #include <thread>
 #include <vector>
 
-#include "index/archive_access.hpp"
-#include "index/archive_index.hpp"
+#include "core/archive_access.hpp"
+#include "core/archive_index.hpp"
 #include "util/format.hpp"
 
 namespace fs = std::filesystem;
@@ -165,24 +165,24 @@ int main()
         return fail("cannot create fixture");
     }
 
-    sauce::fs::ArchiveIndexOptions options;
+    sauce::fs::core::ArchiveIndexOptions options;
     options.database = database;
     options.game_folders.push_back(game);
 
-    sauce::fs::ArchiveWatchOptions watch;
+    sauce::fs::core::ArchiveWatchOptions watch;
     watch.debounce = 50ms;
     watch.verbose = false;
 
-    sauce::fs::ArchiveIndexResult result;
-    sauce::fs::ArchiveIndexWatcher watcher(options, watch);
+    sauce::fs::core::ArchiveIndexResult result;
+    sauce::fs::core::ArchiveIndexWatcher watcher(options, watch);
     bool watcher_result = false;
     std::thread thread([&] { watcher_result = watcher.run(result); });
 
-    std::shared_ptr<sauce::fs::IndexDatabase> index;
+    std::shared_ptr<sauce::fs::core::IndexDatabase> index;
     if (!wait_for(
             [&]
             {
-                auto opened = sauce::fs::IndexDatabase::open(database);
+                auto opened = sauce::fs::core::IndexDatabase::open(database);
                 if (!opened)
                 {
                     return false;

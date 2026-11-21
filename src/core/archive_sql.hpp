@@ -6,7 +6,7 @@
 
 /// SQL text used by the index writer and the runtime reader. Raw strings keep
 /// the statements readable and avoid line-by-line literal concatenation.
-namespace sauce::fs::sql
+namespace sauce::fs::core::sql
 {
 
 inline constexpr std::string_view kForeignKeysOn = R"sql(PRAGMA foreign_keys = ON;)sql";
@@ -157,4 +157,4 @@ UPDATE archives SET game_id = ?, mount_path = ?, stem = ?, archive_type_id = ?, 
 WHERE id = ?
 )sql";
 
-} // namespace sauce::fs::sql
+} // namespace sauce::fs::core::sql

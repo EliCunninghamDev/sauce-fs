@@ -12,7 +12,7 @@ struct sqlite3_stmt;
 
 /// Thin RAII helpers over the SQLite C API. They keep handle ownership and the
 /// prepare/bind/step/reset cycle in one place; SQL text lives in archive_sql.hpp.
-namespace sauce::fs::sqlite
+namespace sauce::fs::core::sqlite
 {
 
 struct DatabaseCloser
@@ -57,4 +57,4 @@ bool begin(sqlite3* database, std::string& error, bool immediate = false);
 bool commit(sqlite3* database, std::string& error);
 void rollback(sqlite3* database);
 
-} // namespace sauce::fs::sqlite
+} // namespace sauce::fs::core::sqlite

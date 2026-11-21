@@ -10,9 +10,9 @@
 
 #include <sqlite3.h>
 
-#include "index/archive_access.hpp"
-#include "index/archive_index.hpp"
-#include "index/sqlite_util.hpp"
+#include "core/archive_access.hpp"
+#include "core/archive_index.hpp"
+#include "core/sqlite_util.hpp"
 #include "util/format.hpp"
 
 namespace fs = std::filesystem;
@@ -95,8 +95,8 @@ int fail(const char* message)
     return 1;
 }
 
-const sauce::fs::IndexDatabase::ArchiveInfo*
-find_archive(const std::vector<sauce::fs::IndexDatabase::ArchiveInfo>& archives,
+const sauce::fs::core::IndexDatabase::ArchiveInfo*
+find_archive(const std::vector<sauce::fs::core::IndexDatabase::ArchiveInfo>& archives,
              const std::string& name)
 {
     for (const auto& archive : archives)
@@ -134,25 +134,25 @@ int main()
         return fail("cannot create fixture");
     }
 
-    sauce::fs::ArchiveIndexOptions options;
+    sauce::fs::core::ArchiveIndexOptions options;
     options.database = database;
     options.game_folders.push_back(game);
 
-    sauce::fs::ArchiveIndexResult result;
-    if (!sauce::fs::build_archive_index(options, result))
+    sauce::fs::core::ArchiveIndexResult result;
+    if (!sauce::fs::core::build_archive_index(options, result))
     {
         return fail(result.error.empty() ? "index build failed" : result.error.c_str());
     }
 
     std::string database_error;
-    sauce::fs::sqlite::Database raw =
-        sauce::fs::sqlite::open(database, sauce::fs::sqlite::OpenMode::ReadOnly, database_error);
+    sauce::fs::core::sqlite::Database raw = sauce::fs::core::sqlite::open(
+        database, sauce::fs::core::sqlite::OpenMode::ReadOnly, database_error);
     if (!raw)
     {
         return fail(database_error.empty() ? "cannot open the generated database"
                                            : database_error.c_str());
     }
-    sauce::fs::sqlite::Statement statement = sauce::fs::sqlite::prepare(
+    sauce::fs::core::sqlite::Statement statement = sauce::fs::core::sqlite::prepare(
         raw.get(),
         "SELECT COUNT(*) FROM archive_type WHERE name IN ('vpk','bsp-pak','gma','gma-bin')",
         database_error);
@@ -167,7 +167,7 @@ int main()
         return fail("archive_type lookup table is incomplete");
     }
 
-    auto opened = sauce::fs::IndexDatabase::open(database);
+    auto opened = sauce::fs::core::IndexDatabase::open(database);
     if (!opened)
     {
         return fail("cannot open the generated database for reading");

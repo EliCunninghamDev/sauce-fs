@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-#include "index/archive_discovery.hpp"
+#include "core/archive_discovery.hpp"
 
 #include <algorithm>
 #include <exception>
@@ -12,14 +12,14 @@
 #include <utility>
 #include <vector>
 
-#include "index/archive_constants.hpp"
-#include "index/thread_pool.hpp"
+#include "core/archive_constants.hpp"
+#include "core/thread_pool.hpp"
 #include "parsers/bytes.hpp"
 #include "parsers/gma.hpp"
 #include "parsers/steam.hpp"
 #include "parsers/vpk.hpp"
 
-namespace sauce::fs
+namespace sauce::fs::core
 {
 
 namespace
@@ -582,4 +582,4 @@ ScanPlan collect_scan_plan(const ArchiveIndexOptions& options)
     return plan;
 }
 
-} // namespace sauce::fs
+} // namespace sauce::fs::core

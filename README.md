@@ -1,16 +1,18 @@
 # sauce-fs
 
-Read-only, cross-platform access to Source engine content. Two layers live here:
+Read-only access to Source engine content archives: VPK `_dir` trees and side
+archives, embedded BSP pakfiles, GMA addons, and legacy `.bin` addons. Entry
+metadata is recorded in SQLite and read back as raw bytes, inflating DEFLATE
+and LZMA payloads on demand.
 
-- **`sauce-fs`** — the original virtual filesystem. It exposes a generated
-  `manifest.txt` reporting the versions of every linked library plus
-  crc32/XXH3 digests of the report. Linux uses FUSE3 and Windows uses WinFsp;
-  the same `snapshot()` source feeds both, so the volume content is identical.
-- **Archive index** — a scanner plus runtime access layer for the archives
-  inside installed Source games: VPK `_dir` trees and side archives, embedded
-  BSP pakfiles, GMA addons, and legacy `.bin` addons. It records entry metadata
-  in SQLite and reads entries back as raw bytes, inflating DEFLATE and LZMA
-  payloads on demand.
+The project is split into two layers:
+
+- **`core`** — a reusable indexing library (`sauce_fs_core`) that discovers
+  installed games, scans archives, writes the SQLite index, watches for
+  changes, and exposes the runtime provider API. Nothing in this layer depends
+  on a mount backend, so it can be embedded in another application.
+- **`fuse`** — the filesystem layer (`sauce_fs_fuse`), a read-only FUSE3 mount
+  that walks the index through the provider API.
 
 The index is consumed three ways through one provider API: random lookup by
 path, folder browsing, and a read-only mount that walks every archive.
@@ -34,7 +36,6 @@ Not from vcpkg:
 | Library | Platform | Why |
 | --- | --- | --- |
 | FUSE3 | Linux | must match the running kernel; vcpkg's `libfuse` port is FUSE2 |
-| WinFsp | Windows | no vcpkg port; shipped as its own MSI |
 
 ## Prerequisites
 
@@ -44,9 +45,10 @@ Not from vcpkg:
   ```sh
   export VCPKG_ROOT=$HOME/vcpkg
   ```
-- Linux: `libfuse3-dev` and `/dev/fuse`
-- Windows: [WinFsp](https://winfsp.dev/) installed; optionally `WINFSP_ROOT`
-  (defaults to `C:/Program Files (x86)/WinFsp`)
+  The checked-in presets read only this environment variable. Keep
+  machine-specific paths in a `CMakeUserPresets.json` (git-ignored, loaded
+  automatically) that inherits from `linux`.
+- Linux, for the mount: `libfuse3-dev` and `/dev/fuse`
 
 ## Build
 
@@ -56,32 +58,36 @@ cmake --build --preset linux
 ctest --preset linux
 ```
 
-Windows: run the same commands with `--preset windows` from a developer prompt
-(vcpkg triplet `x64-windows`).
-
 Targets:
 
 | Target | What it is |
 | --- | --- |
-| `sauce-fs` | Manifest VFS with the platform mount backend |
+| `sauce_fs_core` | Reusable indexing library: discovery, scanning, SQLite, providers |
+| `sauce_fs_fuse` | Read-only FUSE frontend over the index providers |
 | `sauce-fs-index` | Archive scanner and indexer |
 | `sauce-fs-get` | Reference consumer: get/list/stat/resolve |
 | `sauce-fs-mount` | Read-only FUSE mount over the index |
 
-## Manifest volume
+### Quick start
+
+With [just](https://github.com/casey/just) installed, the full workflow is one
+command:
 
 ```sh
-./build/linux/sauce-fs --self-check     # link + round-trip each dependency
-./build/linux/sauce-fs /mnt/sauce       # mount in the foreground
-cat /mnt/sauce/manifest.txt
-fusermount3 -u /mnt/sauce               # or Ctrl+C
+just up
 ```
 
-On Windows, mount to a drive letter or directory:
+This builds the project, indexes every discovered Source game into
+`build/linux/sauce-full.db`, keeps the index fresh with a watcher, and mounts
+it at `/mnt/sauce-full`. `just up` is idempotent: re-running it unmounts the
+old mount, stops the previous watcher, and builds everything again.
 
-```powershell
-build\windows\sauce-fs.exe S:
-type S:\manifest.txt
+```sh
+just status   # what is running and where the database and logs live
+just logs     # tail the indexer and mount logs
+just stop     # unmount and stop the watcher
+just index    # rebuild the index once without starting the watcher
+just mount    # remount the existing index
 ```
 
 ## Archive index
@@ -186,14 +192,20 @@ cat /mnt/sourcegames/half-life-2/hl2/materials/foo.vmt
 fusermount3 -u /mnt/sourcegames
 ```
 
-Files are `0444` and directories `0555`. Because archives are namespaced per
+Files are `0444` and directories `0555` by default; both are always read-only
+through the mount. `--file-mode` and `--dir-mode` change only the reported
+bits, which matters when copying out because `cp` makes the copy inherit the
+source mode. `just up` mounts with `0644`/`0755` so extracted files stay
+editable.
+
+Because archives are namespaced per
 archive rather than merged per game, colliding paths stay distinct — for
 example `half-life-2/maps/c1a0/materials/...` and
 `half-life-2/hl2_misc/materials/...`.
 
 ### API
 
-`src/index/archive_access.hpp` exposes a `Provider` with three primitives:
+`src/core/archive_access.hpp` exposes a `Provider` with three primitives:
 
 ```cpp
 Result<NodeInfo> stat(std::string_view path) const;
@@ -223,6 +235,9 @@ if (provider->resolve("materials/foo.vmt", entry))
 }
 ```
 
+Everything in the indexing library lives in `sauce::fs::core`. The FUSE layer
+lives in `sauce::fs::fuse` and only depends on the public `core` API.
+
 ### Database schema
 
 - `games(id, slug, title, game_path)` — one row per detected game. `slug` is
@@ -246,8 +261,7 @@ the logical file size, `length` the stored byte count, `method` is 0 (stored),
 
 ## Limitations
 
-- Archive mounts are Linux/FUSE3 only; the Windows backend currently mounts the
-  manifest volume, not the archive index.
+- The mount is Linux/FUSE3 only; `sauce_fs_core` itself is portable.
 - FUSE `open` materializes the whole logical file, so opening a very large entry
   allocates its full size. The decoded-file cache is 256 MB; legacy `.bin`
   payloads are pinned separately.
@@ -260,19 +274,13 @@ the logical file size, `length` the stored byte count, `method` is 0 (stored),
 ## Layout
 
 ```
-CMakeLists.txt            dependency discovery, targets, per-platform backend
+CMakeLists.txt            dependency discovery and targets
 CMakePresets.json         vcpkg-based configure/build/test presets
+justfile                  one-command build, full index, and mount workflow
 vcpkg.json                manifest of ported dependencies
-src/main.cpp              CLI: --self-check or mount
-src/core/                 manifest report and volume contents (platform neutral)
-src/backends/backend.h    mount()/backend_check() contract
-src/backends/fuse3.cpp    Linux FUSE3 frontend
-src/backends/winfsp.cpp   Windows WinFsp frontend
+src/core/                 indexing library: discovery, scanning, SQLite, providers
+src/fuse/                 read-only FUSE frontend over the core providers
 src/parsers/              VPK, BSP, GMA, Steam, and gameinfo readers
-src/index/                archive indexer, SQLite schema, runtime providers
-src/mount/                read-only FUSE frontend over the index providers
+src/util/format.hpp       fmt wrapper shared by the CLIs and the mount
 tests/                    index watcher and GMA metadata integration tests
 ```
-
-Adding a file to the manifest volume means extending `snapshot()` in
-`src/core/volume.cpp`; both backends pick it up without changes.

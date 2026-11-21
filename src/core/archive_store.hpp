@@ -8,9 +8,9 @@
 #include <unordered_map>
 #include <vector>
 
-#include "index/archive_index.hpp"
+#include "core/archive_index.hpp"
 
-namespace sauce::fs
+namespace sauce::fs::core
 {
 
 /// One `archives` row read back from the database for incremental updates.
@@ -58,4 +58,4 @@ bool read_archive_rows(const std::filesystem::path& database,
 bool apply_database_delta(const std::filesystem::path& database, const DatabaseDelta& delta,
                           std::string& error);
 
-} // namespace sauce::fs
+} // namespace sauce::fs::core

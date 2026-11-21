@@ -4,7 +4,7 @@
 #include <cstdlib>
 #include <string>
 
-#include "index/archive_index.hpp"
+#include "core/archive_index.hpp"
 #include "util/format.hpp"
 
 namespace
@@ -32,8 +32,8 @@ void usage(const char* program)
 
 int main(int argc, char** argv)
 {
-    sauce::fs::ArchiveIndexOptions options;
-    sauce::fs::ArchiveWatchOptions watch;
+    sauce::fs::core::ArchiveIndexOptions options;
+    sauce::fs::core::ArchiveWatchOptions watch;
     bool watch_mode = false;
 
     for (int index = 1; index < argc; ++index)
@@ -98,13 +98,13 @@ int main(int argc, char** argv)
 
     if (watch_mode)
     {
-        sauce::fs::ArchiveIndexResult result;
-        sauce::fs::ArchiveIndexWatcher watcher(options, watch);
+        sauce::fs::core::ArchiveIndexResult result;
+        sauce::fs::core::ArchiveIndexWatcher watcher(options, watch);
         return watcher.run(result) ? 0 : 1;
     }
 
-    sauce::fs::ArchiveIndexResult result;
-    if (!sauce::fs::build_archive_index(options, result))
+    sauce::fs::core::ArchiveIndexResult result;
+    if (!sauce::fs::core::build_archive_index(options, result))
     {
         return 1;
     }

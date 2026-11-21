@@ -360,7 +360,7 @@ bool lzma_zip_decode(const std::uint8_t* data, std::size_t size, std::uint64_t d
         set_error(error, "truncated ZIP LZMA header");
         return false;
     }
-    const std::uint16_t properties_size = static_cast<std::uint16_t>(data[2] | (data[3] << 8));
+    const std::uint16_t properties_size = load_le16(data + 2);
     if (properties_size != kPropertiesSize)
     {
         if (error != nullptr)

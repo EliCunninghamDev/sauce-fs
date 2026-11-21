@@ -4,7 +4,7 @@
 #include <memory>
 #include <string>
 
-#include "index/archive_access.hpp"
+#include "core/archive_access.hpp"
 #include "util/format.hpp"
 
 namespace
@@ -28,7 +28,7 @@ void usage(const char* program)
         program);
 }
 
-int fail(const sauce::fs::Error& error)
+int fail(const sauce::fs::core::Error& error)
 {
     sauce::fs::print_error("error: {}\n", error.message);
     return 1;
@@ -113,12 +113,12 @@ int main(int argc, char** argv)
         path = "/";
     }
 
-    auto opened = sauce::fs::IndexDatabase::open(database);
+    auto opened = sauce::fs::core::IndexDatabase::open(database);
     if (!opened)
     {
         return fail(opened.error());
     }
-    const std::shared_ptr<sauce::fs::IndexDatabase> index = *opened;
+    const std::shared_ptr<sauce::fs::core::IndexDatabase> index = *opened;
 
     auto provider = game.empty() ? index->mount_provider() : index->game_provider(game);
     if (!provider)
@@ -133,9 +133,9 @@ int main(int argc, char** argv)
         {
             return fail(entries.error());
         }
-        for (const sauce::fs::DirectoryEntry& entry : *entries)
+        for (const sauce::fs::core::DirectoryEntry& entry : *entries)
         {
-            const bool directory = entry.info.kind == sauce::fs::NodeInfo::Kind::Directory;
+            const bool directory = entry.info.kind == sauce::fs::core::NodeInfo::Kind::Directory;
             if (directory)
             {
                 sauce::fs::print("d {}/\n", entry.name);
@@ -155,7 +155,7 @@ int main(int argc, char** argv)
         {
             return fail(info.error());
         }
-        if (info->kind == sauce::fs::NodeInfo::Kind::Directory)
+        if (info->kind == sauce::fs::core::NodeInfo::Kind::Directory)
         {
             sauce::fs::print("d {}\n", path);
         }
@@ -168,13 +168,13 @@ int main(int argc, char** argv)
 
     if (resolve_raw)
     {
-        sauce::fs::ResolvedEntry entry;
+        sauce::fs::core::ResolvedEntry entry;
         if (!(*provider)->resolve(path, entry))
         {
             sauce::fs::print_error("error: cannot resolve {}\n", path);
             return 1;
         }
-        if (entry.info.kind == sauce::fs::NodeInfo::Kind::Directory)
+        if (entry.info.kind == sauce::fs::core::NodeInfo::Kind::Directory)
         {
             sauce::fs::print("d {}\n", path);
             return 0;

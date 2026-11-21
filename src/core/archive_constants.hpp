@@ -8,7 +8,7 @@
 /// String values shared by the index writer, the runtime reader, and the
 /// mount. Keeping them here avoids scattering database values and archive
 /// naming rules across translation units.
-namespace sauce::fs::constants
+namespace sauce::fs::core::constants
 {
 
 // Steam library layout used for Garry's Mod workshop discovery.
@@ -55,4 +55,4 @@ inline constexpr std::string_view kVpkDirectoryStemSuffix = "_dir";
 inline constexpr std::string_view kBspExtension = ".bsp";
 inline constexpr std::string_view kGmaExtension = ".gma";
 
-} // namespace sauce::fs::constants
+} // namespace sauce::fs::core::constants

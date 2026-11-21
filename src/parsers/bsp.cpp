@@ -41,13 +41,8 @@ bool parse_bsp_pakfile(const std::filesystem::path& path, std::uint64_t& pak_off
         }
         return false;
     }
-    auto le32 = [](const std::uint8_t* p)
-    {
-        return static_cast<std::uint32_t>(p[0]) | (static_cast<std::uint32_t>(p[1]) << 8) |
-               (static_cast<std::uint32_t>(p[2]) << 16) | (static_cast<std::uint32_t>(p[3]) << 24);
-    };
-    pak_offset = le32(header + 8 + 40 * 16);
-    pak_length = le32(header + 8 + 40 * 16 + 4);
+    pak_offset = load_le32(header + 8 + 40 * 16);
+    pak_length = load_le32(header + 8 + 40 * 16 + 4);
     if (pak_length == 0)
     {
         return true;
@@ -200,19 +195,13 @@ bool parse_bsp_pakfile(const std::filesystem::path& path, std::uint64_t& pak_off
             warnings.push_back("truncated local ZIP header in " + path.string());
             continue;
         }
-        auto local32 = [](const std::uint8_t* p)
-        {
-            return static_cast<std::uint32_t>(p[0]) | (static_cast<std::uint32_t>(p[1]) << 8) |
-                   (static_cast<std::uint32_t>(p[2]) << 16) |
-                   (static_cast<std::uint32_t>(p[3]) << 24);
-        };
-        if (local32(local) != 0x04034B50u)
+        if (load_le32(local) != 0x04034B50u)
         {
             warnings.push_back("invalid local ZIP header in " + path.string());
             continue;
         }
-        const std::uint16_t local_name = static_cast<std::uint16_t>(local[26] | (local[27] << 8));
-        const std::uint16_t local_extra = static_cast<std::uint16_t>(local[28] | (local[29] << 8));
+        const std::uint16_t local_name = load_le16(local + 26);
+        const std::uint16_t local_extra = load_le16(local + 28);
         std::uint64_t data_offset =
             static_cast<std::uint64_t>(local_offset) + 30 + local_name + local_extra;
         std::uint64_t data_end = 0;

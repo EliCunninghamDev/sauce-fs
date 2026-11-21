@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 
-#include "index/thread_pool.hpp"
+#include "core/thread_pool.hpp"
 
 #include <utility>
 
-namespace sauce::fs
+namespace sauce::fs::core
 {
 
 ThreadPool::ThreadPool(std::size_t workers)
@@ -95,4 +95,4 @@ void ThreadPool::run()
     }
 }
 
-} // namespace sauce::fs
+} // namespace sauce::fs::core

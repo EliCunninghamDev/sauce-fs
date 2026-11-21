@@ -134,12 +134,7 @@ bool parse_vpk(const std::filesystem::path& path, std::vector<ScannedEntry>& ent
         }
         return false;
     }
-    auto le32 = [](const std::uint8_t* p)
-    {
-        return static_cast<std::uint32_t>(p[0]) | (static_cast<std::uint32_t>(p[1]) << 8) |
-               (static_cast<std::uint32_t>(p[2]) << 16) | (static_cast<std::uint32_t>(p[3]) << 24);
-    };
-    if (le32(header) != 0x55AA1234u)
+    if (load_le32(header) != 0x55AA1234u)
     {
         if (error)
         {
@@ -147,7 +142,7 @@ bool parse_vpk(const std::filesystem::path& path, std::vector<ScannedEntry>& ent
         }
         return false;
     }
-    const std::uint32_t version = le32(header + 4);
+    const std::uint32_t version = load_le32(header + 4);
     if (version != 1 && version != 2)
     {
         if (error)
@@ -165,7 +160,7 @@ bool parse_vpk(const std::filesystem::path& path, std::vector<ScannedEntry>& ent
         }
         return false;
     }
-    const std::uint64_t tree_size = le32(header + 8);
+    const std::uint64_t tree_size = load_le32(header + 8);
     std::uint64_t tree_offset = header_size;
     std::uint64_t data_offset = 0;
     if (!safe_add(tree_offset, tree_size, data_offset) || data_offset > file.size())

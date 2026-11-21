@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-#include "index/archive_store.hpp"
+#include "core/archive_store.hpp"
 
 #include <filesystem>
 #include <string>
@@ -10,11 +10,11 @@
 
 #include <sqlite3.h>
 
-#include "index/archive_scan.hpp"
-#include "index/archive_sql.hpp"
-#include "index/sqlite_util.hpp"
+#include "core/archive_scan.hpp"
+#include "core/archive_sql.hpp"
+#include "core/sqlite_util.hpp"
 
-namespace sauce::fs
+namespace sauce::fs::core
 {
 
 namespace
@@ -583,4 +583,4 @@ bool apply_database_delta(const fs::path& database, const DatabaseDelta& delta, 
     }
     return true;
 }
-} // namespace sauce::fs
+} // namespace sauce::fs::core

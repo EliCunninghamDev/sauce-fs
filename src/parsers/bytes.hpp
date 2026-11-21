@@ -46,6 +46,8 @@ std::uint32_t crc32_update(std::uint32_t crc, const void* data, std::size_t leng
 // Little-endian loads
 // ---------------------------------------------------------------------------
 
+std::uint16_t load_le16(const std::uint8_t* data) noexcept;
+
 std::uint32_t load_le32(const std::uint8_t* data) noexcept;
 
 std::uint64_t load_le64(const std::uint8_t* data) noexcept;

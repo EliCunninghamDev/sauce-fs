@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-#include "index/archive_access.hpp"
+#include "core/archive_access.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -15,14 +15,14 @@
 #include <fmt/format.h>
 #include <sqlite3.h>
 
-#include "index/archive_constants.hpp"
-#include "index/archive_sql.hpp"
-#include "index/sqlite_util.hpp"
+#include "core/archive_constants.hpp"
+#include "core/archive_sql.hpp"
+#include "core/sqlite_util.hpp"
 #include "parsers/bytes.hpp"
 #include "parsers/compression.hpp"
 #include "parsers/gma.hpp"
 
-namespace sauce::fs
+namespace sauce::fs::core
 {
 
 namespace
@@ -1075,4 +1075,4 @@ Result<Blob> TreeProvider::get(std::string_view path) const
     return child->second.provider->get(join_path(*parts, 1));
 }
 
-} // namespace sauce::fs
+} // namespace sauce::fs::core
