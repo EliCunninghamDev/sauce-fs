@@ -2,10 +2,13 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace sauce::fs
@@ -20,8 +23,11 @@ enum class ArchiveVariant : std::uint8_t
     GmaBin,
 };
 
-/// SQL `variant` value: "vpk", "bsp-pak", "gma", or "gma-bin".
-const char* archive_variant_name(ArchiveVariant variant) noexcept;
+/// `archive_type.name` value: "vpk", "bsp-pak", "gma", or "gma-bin".
+std::string_view archive_variant_name(ArchiveVariant variant) noexcept;
+
+/// `archive_type.id` for an archive variant.
+std::int64_t archive_type_id(ArchiveVariant variant) noexcept;
 
 /// Kind of file listed inside an archive.
 enum class AssetType : std::uint8_t
@@ -37,7 +43,7 @@ enum class AssetType : std::uint8_t
 
 /// SQL `assettype` value: "Unknown", "Model", "Material", "Texture", "Sound",
 /// "Map", or "Script".
-const char* asset_type_name(AssetType type) noexcept;
+std::string_view asset_type_name(AssetType type) noexcept;
 
 /// One installed game. The mount exposes it as `sourcegames/<slug>`.
 struct GameRecord
@@ -65,6 +71,19 @@ struct ArchiveRecord
     std::string stem;
     ArchiveVariant variant = ArchiveVariant::Vpk;
     std::uint64_t hash = 0;
+    /// Physical archive size and last-write timestamp. Watch mode compares
+    /// these against the database to avoid rehashing unchanged archives.
+    std::uint64_t size = 0;
+    std::int64_t modified = 0;
+
+    /// GMAD header fields. Empty/default for VPK and BSP archives.
+    std::string addon_name;
+    /// Raw addon.json string: description, type, and tags.
+    std::string addon_description;
+    std::string addon_author;
+    std::int32_t addon_version = 0;
+    std::uint64_t steamid64 = 0;
+    std::int64_t timestamp = 0;
 };
 
 /// One entry (file or directory) listed inside an archive. Offset locates the
@@ -162,5 +181,46 @@ bool build_archive_index(const ArchiveIndexOptions& options, ArchiveIndexResult&
 /// Print the same summary used by build_archive_index().
 void print_archive_index_summary(const ArchiveIndexResult& result,
                                  const std::filesystem::path& database);
+
+struct ArchiveWatchOptions
+{
+    /// Quiet period after the last filesystem event before the index is
+    /// rescanned. A burst of writes (a game update replacing a VPK tree)
+    /// therefore produces one update instead of one per file.
+    std::chrono::milliseconds debounce{500};
+    /// Print a line for each archive added, removed, or changed.
+    bool verbose = true;
+};
+
+/// Long-running indexer. run() performs a full build and then watches the
+/// scanned roots with efsw, applying incremental SQLite updates whenever an
+/// archive is added, replaced, or deleted.
+///
+/// Only archives whose size or modification time changed are rehashed, and an
+/// archive that was rewritten without a content change keeps its existing
+/// entry rows. Unchanged archives are never parsed again.
+class ArchiveIndexWatcher
+{
+public:
+    explicit ArchiveIndexWatcher(ArchiveIndexOptions options, ArchiveWatchOptions watch = {});
+    ~ArchiveIndexWatcher();
+
+    ArchiveIndexWatcher(const ArchiveIndexWatcher&) = delete;
+    ArchiveIndexWatcher& operator=(const ArchiveIndexWatcher&) = delete;
+
+    /// Build the index once, start watching, and block until stop() is called.
+    /// Returns false only when the initial build or an incremental database
+    /// update fails; individual archive failures are reported as warnings.
+    /// `result` holds the initial full snapshot; later updates are applied
+    /// directly to the database and summarized on stdout.
+    bool run(ArchiveIndexResult& result);
+
+    /// Ask a running run() call to return. Safe to call from another thread.
+    void stop() noexcept;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 
 } // namespace sauce::fs

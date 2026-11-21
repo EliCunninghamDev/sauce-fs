@@ -15,13 +15,27 @@
 namespace sauce::fs::parsers
 {
 
-/// Parse a GMAD (Garry's Mod addon) archive from disk.
+/// Metadata carried in a GMAD header. `description` is the raw addon.json
+/// string; Garry's Mod stores the addon description, type, and tags there.
+struct GmaMetadata
+{
+    std::string name;
+    std::string description;
+    std::string author;
+    std::int32_t version = 0;
+    std::uint64_t steamid64 = 0;
+    std::int64_t timestamp = 0;
+};
+
+/// Parse a GMAD (Garry's Mod addon) archive from disk. When `metadata` is not
+/// null it receives the header fields; it is only written on success.
 bool parse_gma(const std::filesystem::path& path, std::vector<ScannedEntry>& entries,
-               std::string* error);
+               GmaMetadata* metadata, std::string* error);
 
 /// Parse a GMAD archive held in memory (used for decompressed legacy bins).
 bool parse_gma_buffer(const std::uint8_t* data, std::size_t size,
-                      std::vector<ScannedEntry>& entries, std::string* error);
+                      std::vector<ScannedEntry>& entries, GmaMetadata* metadata,
+                      std::string* error);
 
 /// True for `*_legacy.bin` Workshop container names.
 bool is_legacy_bin_name(std::string_view name) noexcept;

@@ -25,6 +25,7 @@ find_package(ZLIB REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(xxHash CONFIG REQUIRED)
 find_package(efsw CONFIG REQUIRED)
+find_package(fmt CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 
 # CMake 3.31+ renamed SQLite::SQLite3 to SQLite3::SQLite3.
@@ -46,6 +47,7 @@ target_link_libraries(sauce_fs_core PUBLIC
     ${SAUCE_FS_SQLITE}
     xxHash::xxhash
     efsw::efsw
+    fmt::fmt
 )
 
 add_executable(sauce-fs src/main.cpp)
@@ -66,19 +68,33 @@ target_include_directories(sauce_fs_parsers PUBLIC src)
 target_link_libraries(sauce_fs_parsers PUBLIC
     LibLZMA::LibLZMA
     ZLIB::ZLIB
+    fmt::fmt
 )
 
+# Shared SQLite ownership helpers and SQL text used by the index writer and the
+# runtime reader. Kept in its own library so both static libraries share one
+# definition of the helpers.
+add_library(sauce_fs_sqlite STATIC src/index/sqlite_util.cpp)
+target_include_directories(sauce_fs_sqlite PUBLIC src)
+target_link_libraries(sauce_fs_sqlite PUBLIC ${SAUCE_FS_SQLITE})
+
 add_library(sauce_fs_index STATIC
+    src/index/archive_discovery.cpp
     src/index/archive_index.cpp
+    src/index/archive_scan.cpp
+    src/index/archive_store.cpp
+    src/index/archive_watch.cpp
     src/index/thread_pool.cpp
 )
 target_include_directories(sauce_fs_index PUBLIC src)
 target_link_libraries(sauce_fs_index PUBLIC
     sauce_fs_parsers
-    ${SAUCE_FS_SQLITE}
+    sauce_fs_sqlite
     Threads::Threads
     ZLIB::ZLIB
     xxHash::xxhash
+    efsw::efsw
+    fmt::fmt
 )
 
 add_executable(sauce-fs-index src/index/archive_index_cli.cpp)
@@ -89,9 +105,10 @@ add_library(sauce_fs_archive STATIC src/index/archive_access.cpp)
 target_include_directories(sauce_fs_archive PUBLIC src)
 target_link_libraries(sauce_fs_archive PUBLIC
     sauce_fs_parsers
-    ${SAUCE_FS_SQLITE}
+    sauce_fs_sqlite
     xxHash::xxhash
     Threads::Threads
+    fmt::fmt
 )
 
 add_executable(sauce-fs-get src/index/archive_get_cli.cpp)
@@ -146,3 +163,17 @@ endif()
 
 enable_testing()
 add_test(NAME self-check COMMAND sauce-fs --self-check)
+
+# Installs a fake game tree and exercises a full build, a replace, an add, and
+# a delete through ArchiveIndexWatcher.
+add_executable(sauce-fs-index-watch-test tests/archive_index_watch_test.cpp)
+target_link_libraries(sauce-fs-index-watch-test PRIVATE sauce_fs_index sauce_fs_archive)
+add_test(NAME index-watch COMMAND sauce-fs-index-watch-test)
+set_tests_properties(index-watch PROPERTIES TIMEOUT 60)
+
+# Builds GMAD fixtures and checks the archive_type lookup plus the addon
+# metadata read back from the database.
+add_executable(sauce-fs-gma-metadata-test tests/gma_metadata_test.cpp)
+target_link_libraries(sauce-fs-gma-metadata-test PRIVATE sauce_fs_index sauce_fs_archive)
+add_test(NAME gma-metadata COMMAND sauce-fs-gma-metadata-test)
+set_tests_properties(gma-metadata PROPERTIES TIMEOUT 60)

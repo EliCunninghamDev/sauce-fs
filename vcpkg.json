@@ -4,6 +4,7 @@
   "description": "Read-only virtual filesystem backed by a compressed, checksummed manifest",
   "dependencies": [
     "efsw",
+    "fmt",
     "liblzma",
     "sqlite3",
     "xxhash",

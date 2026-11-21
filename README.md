@@ -27,6 +27,7 @@ Ported libraries come from [vcpkg](https://github.com/microsoft/vcpkg) via
 | `sqlite3` | Archive index |
 | `xxhash` | XXH3/XXH64 hashing |
 | `efsw` | Filesystem watching |
+| `fmt` | Type-safe formatting for CLI output |
 
 Not from vcpkg:
 
@@ -102,6 +103,35 @@ Each game is scanned on its own thread, with a separate Garry's Mod crawler for
 file; entry contents are not hashed. The database is written once all threads
 join.
 
+### Watching for changes
+
+`--watch` keeps the indexer running after the initial build. efsw watches every
+scanned game root (plus Garry's Mod workshop roots) and a burst of events is
+debounced into one update:
+
+```sh
+./build/linux/sauce-fs-index --database index.db --watch
+./build/linux/sauce-fs-index --database index.db --watch --debounce-ms 1000 \
+    "/path/to/steamapps/common/Half-Life 2"
+```
+
+Only archives whose size or last-write time changed are hashed again. If a
+rewrite produced the same XXH3 digest, the existing entry rows are kept, so a
+touched but unchanged VPK is cheap. Added archives are parsed and inserted,
+removed archives are deleted, and a changed mount path (collision suffixes can
+shift when an archive appears) is updated transactionally. Archives are never
+reparsed just because a sibling changed. Watch roots are selected from the same
+game folders as the initial build; restart the watcher when a whole new game
+folder appears.
+
+Updates use SQLite WAL, so a long-lived `sauce-fs-mount` process (or another
+user of the access API) can read the previous snapshot while the watcher
+commits a new one. The runtime access layer checks `PRAGMA data_version` before
+each lookup, reloads metadata and decoded-file caches when it changes, and the
+FUSE mount rebuilds its provider tree when a game or archive is added or
+removed. New and replaced archives therefore appear in the mounted tree
+without remounting.
+
 ### What gets indexed
 
 | Variant | Source |
@@ -115,6 +145,10 @@ VPK side archives (`*_000.vpk`, …) are not separate rows; their entries are
 resolved through the parent `_dir` archive. BSPs embed a ZIP, so their entries
 carry absolute offsets and method 0/8/14. Legacy `.bin` offsets are relative to
 the decoded GMAD payload.
+
+`archives.archive_type_id` references the `archive_type` lookup table. GMAD
+archives also store the header metadata: addon name, description (the raw
+`addon.json` string), author, addon version, SteamID64, and pack timestamp.
 
 ### CLI
 
@@ -193,8 +227,13 @@ if (provider->resolve("materials/foo.vmt", entry))
 
 - `games(id, slug, title, game_path)` — one row per detected game. `slug` is
   derived from the title (`half-life-2`) because folder names collide.
-- `archives(id, game_id, path, mount_path, name, stem, variant, hash)` — one row
-  per archive, `UNIQUE(game_id, mount_path)`, XXH3-64 `hash`.
+- `archive_type(id, name)` — lookup table for the archive container kind
+  (`vpk`, `bsp-pak`, `gma`, `gma-bin`).
+- `archives(id, game_id, path, mount_path, name, stem, archive_type_id, hash,
+  size, modified, addon_*)` — one row per archive, `UNIQUE(game_id,
+  mount_path)`, XXH3-64 `hash`, and the physical size/mtime used by watch mode
+  to skip unchanged files. GMAD rows carry `addon_name`, `addon_description`,
+  `addon_author`, `addon_version`, `steamid64`, and `timestamp`.
 - `archive_entries(archive_id, path, parent, name, kind, offset, chunk, length,
   size, method, preload_offset, preload_length, assettype)` — primary key
   `(archive_id, path)`, `WITHOUT ROWID`, indexed by
@@ -232,6 +271,7 @@ src/backends/winfsp.cpp   Windows WinFsp frontend
 src/parsers/              VPK, BSP, GMA, Steam, and gameinfo readers
 src/index/                archive indexer, SQLite schema, runtime providers
 src/mount/                read-only FUSE frontend over the index providers
+tests/                    index watcher and GMA metadata integration tests
 ```
 
 Adding a file to the manifest volume means extending `snapshot()` in

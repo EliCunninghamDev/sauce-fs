@@ -1,25 +1,24 @@
 // SPDX-License-Identifier: MIT
 
-#include <cstdio>
 #include <string>
 
 #include "mount/archive_mount.hpp"
+#include "util/format.hpp"
 
 namespace
 {
 
 void usage(const char* program)
 {
-    std::fprintf(stderr,
-                 "usage: %s [options] <mountpoint>\n"
-                 "\n"
-                 "  --database PATH   SQLite index to mount (default: test)\n"
-                 "  -f, --foreground  Stay in the foreground\n"
-                 "  -d, --debug       Enable libfuse debug logging\n"
-                 "  -h, --help        Show this message\n"
-                 "\n"
-                 "The mount is read-only. Unmount with: fusermount3 -u <mountpoint>\n",
-                 program);
+    sauce::fs::print_error("usage: {} [options] <mountpoint>\n"
+                           "\n"
+                           "  --database PATH   SQLite index to mount (default: test)\n"
+                           "  -f, --foreground  Stay in the foreground\n"
+                           "  -d, --debug       Enable libfuse debug logging\n"
+                           "  -h, --help        Show this message\n"
+                           "\n"
+                           "The mount is read-only. Unmount with: fusermount3 -u <mountpoint>\n",
+                           program);
 }
 
 } // namespace
@@ -41,7 +40,7 @@ int main(int argc, char** argv)
         {
             if (index + 1 >= argc)
             {
-                std::fprintf(stderr, "%s: --database needs a path\n", argv[0]);
+                sauce::fs::print_error("{}: --database needs a path\n", argv[0]);
                 return 2;
             }
             options.database = argv[++index];
@@ -60,13 +59,13 @@ int main(int argc, char** argv)
         }
         if (!argument.empty() && argument[0] == '-')
         {
-            std::fprintf(stderr, "%s: unknown option: %s\n", argv[0], argument.c_str());
+            sauce::fs::print_error("{}: unknown option: {}\n", argv[0], argument);
             usage(argv[0]);
             return 2;
         }
         if (!mountpoint.empty())
         {
-            std::fprintf(stderr, "%s: only one mountpoint is supported\n", argv[0]);
+            sauce::fs::print_error("{}: only one mountpoint is supported\n", argv[0]);
             return 2;
         }
         mountpoint = argument;

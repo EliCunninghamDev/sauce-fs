@@ -8,13 +8,15 @@
 #include <cerrno>
 #include <climits>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <string>
 #include <vector>
+
+#include "util/format.hpp"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -42,6 +44,26 @@ struct MountState
     std::shared_ptr<IndexDatabase> database;
     ProviderPtr root;
     std::time_t mount_time = 0;
+    mutable std::mutex root_mutex;
+
+    /// Pick up an index update committed by sauce-fs-index --watch. The
+    /// database object notices the new PRAGMA data_version and reloads its
+    /// metadata; the tree is rebuilt only when that happens.
+    ProviderPtr current_root()
+    {
+        std::lock_guard lock(root_mutex);
+        auto changed = database->refresh();
+        if (!changed || !*changed)
+        {
+            return root;
+        }
+        auto rebuilt = database->mount_provider();
+        if (rebuilt)
+        {
+            root = std::move(*rebuilt);
+        }
+        return root;
+    }
 };
 
 MountState* state_of()
@@ -105,7 +127,12 @@ int do_getattr(const char* path, struct stat* attributes, struct fuse_file_info*
     try
     {
         MountState* state = state_of();
-        auto info = state->root->stat(path);
+        ProviderPtr root = state->current_root();
+        if (!root)
+        {
+            return -EIO;
+        }
+        auto info = root->stat(path);
         if (!info)
         {
             return errno_for(info.error());
@@ -125,7 +152,12 @@ int do_readdir(const char* path, void* buffer, fuse_fill_dir_t fill, off_t, stru
     try
     {
         MountState* state = state_of();
-        auto entries = state->root->list(path);
+        ProviderPtr root = state->current_root();
+        if (!root)
+        {
+            return -EIO;
+        }
+        auto entries = root->list(path);
         if (!entries)
         {
             return errno_for(entries.error());
@@ -158,7 +190,12 @@ int do_open(const char* path, struct fuse_file_info* file)
     try
     {
         MountState* state = state_of();
-        auto info = state->root->stat(path);
+        ProviderPtr root = state->current_root();
+        if (!root)
+        {
+            return -EIO;
+        }
+        auto info = root->stat(path);
         if (!info)
         {
             return errno_for(info.error());
@@ -167,14 +204,16 @@ int do_open(const char* path, struct fuse_file_info* file)
         {
             return -EISDIR;
         }
-        auto blob = state->root->get(path);
+        auto blob = root->get(path);
         if (!blob)
         {
             return errno_for(blob.error());
         }
         auto* open = new OpenFile{std::move(*blob)};
         file->fh = reinterpret_cast<std::uint64_t>(open);
-        file->keep_cache = 1;
+        // Keep_cache would serve stale bytes after --watch replaces an archive;
+        // the index is always current and the provider cache is cheap.
+        file->keep_cache = 0;
         return 0;
     }
     catch (const std::bad_alloc&)
@@ -239,13 +278,13 @@ int run_archive_mount(const ArchiveMountOptions& options, const std::filesystem:
     auto database = IndexDatabase::open(options.database);
     if (!database)
     {
-        std::fprintf(stderr, "sauce-fs-mount: %s\n", database.error().message.c_str());
+        sauce::fs::print_error("sauce-fs-mount: {}\n", database.error().message);
         return 1;
     }
     auto root = (*database)->mount_provider();
     if (!root)
     {
-        std::fprintf(stderr, "sauce-fs-mount: %s\n", root.error().message.c_str());
+        sauce::fs::print_error("sauce-fs-mount: {}\n", root.error().message);
         return 1;
     }
 

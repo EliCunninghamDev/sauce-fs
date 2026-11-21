@@ -1,19 +1,18 @@
-#include <cstdio>
 #include <string>
 #include <vector>
 
 #include "backends/backend.h"
 #include "core/manifest.h"
+#include "util/format.hpp"
 
 namespace
 {
 
 void usage(const char* program)
 {
-    std::fprintf(stderr,
-                 "usage: %s <mountpoint> [options]\n"
-                 "       %s --self-check\n",
-                 program, program);
+    sauce::fs::print_error("usage: {} <mountpoint> [options]\n"
+                           "       {} --self-check\n",
+                           program, program);
 }
 
 } // namespace
@@ -38,10 +37,10 @@ int main(int argc, char** argv)
             {
                 ++failures;
             }
-            std::printf("%-4s %-8s %s\n", check.ok ? "ok" : "FAIL", check.name.c_str(),
-                        check.detail.c_str());
+            sauce::fs::print("{:<4} {:<8} {}\n", check.ok ? "ok" : "FAIL", check.name,
+                             check.detail);
         }
-        std::printf("%zu checks, %d failed\n", checks.size(), failures);
+        sauce::fs::print("{} checks, {} failed\n", checks.size(), failures);
         return failures == 0 ? 0 : 1;
     }
 

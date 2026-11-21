@@ -2,13 +2,13 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #include <efsw/efsw.hpp>
+#include <fmt/format.h>
 #include <lzma.h>
 #include <sqlite3.h>
 #include <xxhash.h>
@@ -21,9 +21,7 @@ namespace
 
 std::string hex(std::uint64_t value)
 {
-    char buffer[32];
-    std::snprintf(buffer, sizeof buffer, "0x%llx", static_cast<unsigned long long>(value));
-    return buffer;
+    return fmt::format("0x{:x}", value);
 }
 
 std::uint64_t digest_crc32(const std::string& text)

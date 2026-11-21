@@ -101,7 +101,7 @@ bool decode_legacy_bin(const std::filesystem::path& path, std::vector<std::uint8
 
 template <typename Reader>
 bool parse_gma_reader(Reader& file, const std::string& label, std::vector<ScannedEntry>& entries,
-                      std::string* error)
+                      GmaMetadata* metadata, std::string* error)
 {
     if (file.size() < 5)
     {
@@ -137,8 +137,10 @@ bool parse_gma_reader(Reader& file, const std::string& label, std::vector<Scanne
         }
         return false;
     }
-    // Header: steamid u64, timestamp u64, then (v2+) four cstrings, (v3) i32.
-    if (!file.seek(5 + 8 + 8))
+    // Header: steamid u64, timestamp u64, then (v2+) the required-content list,
+    // then the addon name, description, and author, followed by an i32 addon
+    // version.
+    if (!file.seek(5))
     {
         if (error)
         {
@@ -146,29 +148,53 @@ bool parse_gma_reader(Reader& file, const std::string& label, std::vector<Scanne
         }
         return false;
     }
+    std::uint8_t steamid_raw[8] = {};
+    std::uint8_t timestamp_raw[8] = {};
+    if (!file.read(steamid_raw, 8) || !file.read(timestamp_raw, 8))
+    {
+        if (error)
+        {
+            *error = "truncated GMA header: " + label;
+        }
+        return false;
+    }
+
+    GmaMetadata header;
+    header.steamid64 = load_le64(steamid_raw);
+    header.timestamp = static_cast<std::int64_t>(load_le64(timestamp_raw));
+
     std::string scratch;
     if (version >= 2)
     {
-        for (int i = 0; i < 4; ++i)
+        // Required content is a list of strings terminated by an empty string.
+        for (;;)
         {
             if (!file.read_string(scratch, 1u << 20, error))
             {
                 return false;
             }
-        }
-    }
-    if (version >= 3)
-    {
-        std::uint8_t raw[4];
-        if (!file.read(raw, 4))
-        {
-            if (error)
+            if (scratch.empty())
             {
-                *error = "truncated GMA header: " + label;
+                break;
             }
-            return false;
         }
     }
+    if (!file.read_string(header.name, 1u << 20, error) ||
+        !file.read_string(header.description, 1u << 20, error) ||
+        !file.read_string(header.author, 1u << 20, error))
+    {
+        return false;
+    }
+    std::uint8_t version_raw[4] = {};
+    if (!file.read(version_raw, 4))
+    {
+        if (error)
+        {
+            *error = "truncated GMA header: " + label;
+        }
+        return false;
+    }
+    header.version = static_cast<std::int32_t>(load_le32(version_raw));
 
     std::vector<ScannedEntry> parsed;
     std::uint64_t data_bytes = 0;
@@ -271,26 +297,30 @@ bool parse_gma_reader(Reader& file, const std::string& label, std::vector<Scanne
         entry.offset += data_offset;
         entries.push_back(std::move(entry));
     }
+    if (metadata != nullptr)
+    {
+        *metadata = std::move(header);
+    }
     return true;
 }
 
 bool parse_gma(const std::filesystem::path& path, std::vector<ScannedEntry>& entries,
-               std::string* error)
+               GmaMetadata* metadata, std::string* error)
 {
     FileHandle file;
     if (!file.open(path, error))
     {
         return false;
     }
-    return parse_gma_reader(file, path.string(), entries, error);
+    return parse_gma_reader(file, path.string(), entries, metadata, error);
 }
 
 /// Parse a GMAD archive held in memory (used for decompressed legacy bins).
 bool parse_gma_buffer(const std::uint8_t* data, std::size_t size,
-                      std::vector<ScannedEntry>& entries, std::string* error)
+                      std::vector<ScannedEntry>& entries, GmaMetadata* metadata, std::string* error)
 {
     MemoryReader reader(data, size);
-    return parse_gma_reader(reader, "<memory>", entries, error);
+    return parse_gma_reader(reader, "<memory>", entries, metadata, error);
 }
 
 } // namespace sauce::fs::parsers

@@ -9,7 +9,6 @@
 #include "backends/backend.h"
 
 #include <algorithm>
-#include <cstdio>
 #include <cstring>
 #include <cwchar>
 #include <memory>
@@ -21,6 +20,7 @@
 #include <winfsp/winfsp.h>
 
 #include "core/volume.h"
+#include "util/format.hpp"
 
 namespace sauce::fs
 {
@@ -337,7 +337,7 @@ int mount(int argc, char** argv)
 {
     if (argc < 1)
     {
-        std::fprintf(stderr, "sauce-fs: mount point required (drive letter or directory)\n");
+        sauce::fs::print_error("sauce-fs: mount point required (drive letter or directory)\n");
         return 2;
     }
 
@@ -359,8 +359,8 @@ int mount(int argc, char** argv)
                                           &parameters, &ops, &g_file_system);
     if (status != STATUS_SUCCESS)
     {
-        std::fprintf(stderr, "sauce-fs: FspFileSystemCreate failed (0x%08lx)\n",
-                     static_cast<unsigned long>(status));
+        sauce::fs::print_error("sauce-fs: FspFileSystemCreate failed (0x{:08x})\n",
+                               static_cast<unsigned long>(status));
         return 1;
     }
 
@@ -368,8 +368,8 @@ int mount(int argc, char** argv)
     status = FspFileSystemSetMountPoint(g_file_system, mount_point.data());
     if (status != STATUS_SUCCESS)
     {
-        std::fprintf(stderr, "sauce-fs: cannot mount at %s (0x%08lx)\n", argv[0],
-                     static_cast<unsigned long>(status));
+        sauce::fs::print_error("sauce-fs: cannot mount at {} (0x{:08x})\n", argv[0],
+                               static_cast<unsigned long>(status));
         FspFileSystemDelete(g_file_system);
         return 1;
     }
@@ -377,14 +377,14 @@ int mount(int argc, char** argv)
     status = FspFileSystemStartDispatcher(g_file_system, 0);
     if (status != STATUS_SUCCESS)
     {
-        std::fprintf(stderr, "sauce-fs: dispatcher failed (0x%08lx)\n",
-                     static_cast<unsigned long>(status));
+        sauce::fs::print_error("sauce-fs: dispatcher failed (0x{:08x})\n",
+                               static_cast<unsigned long>(status));
         FspFileSystemDelete(g_file_system);
         return 1;
     }
 
     SetConsoleCtrlHandler(console_handler, TRUE);
-    std::printf("sauce-fs mounted at %s (Ctrl+C to unmount)\n", argv[0]);
+    sauce::fs::print("sauce-fs mounted at {} (Ctrl+C to unmount)\n", argv[0]);
 
     while (InterlockedCompareExchange(&g_stopped, 0, 0) == 0)
     {

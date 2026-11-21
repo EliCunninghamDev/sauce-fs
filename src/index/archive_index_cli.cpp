@@ -1,26 +1,31 @@
 // SPDX-License-Identifier: MIT
 
-#include <cstdio>
+#include <chrono>
+#include <cstdlib>
 #include <string>
 
 #include "index/archive_index.hpp"
+#include "util/format.hpp"
 
 namespace
 {
 
 void usage(const char* program)
 {
-    std::fprintf(stderr,
-                 "usage: %s [options] [game-folder...]\n"
-                 "\n"
-                 "  --database PATH     SQLite database to write (default: test)\n"
-                 "  --steam-root PATH   Steam root used for auto-discovery (repeatable)\n"
-                 "  -h, --help          Show this message\n"
-                 "\n"
-                 "With no game folders, installed Source titles are discovered through Steam.\n"
-                 "One worker scans each game folder; Garry's Mod also gets a GMA/.bin crawler.\n"
-                 "Discovered archives are hashed in parallel.\n",
-                 program);
+    sauce::fs::print_error(
+        "usage: {} [options] [game-folder...]\n"
+        "\n"
+        "  --database PATH     SQLite database to write (default: test)\n"
+        "  --steam-root PATH   Steam root used for auto-discovery (repeatable)\n"
+        "  --watch             Keep running and update the index when archives change\n"
+        "  --debounce-ms N     Watch quiet period before rescanning (default: 500)\n"
+        "  -h, --help          Show this message\n"
+        "\n"
+        "With no game folders, installed Source titles are discovered through Steam.\n"
+        "One worker scans each game folder; Garry's Mod also gets a GMA/.bin crawler.\n"
+        "Discovered archives are hashed in parallel. --watch only rehashes archives\n"
+        "whose size or modification time changed.\n",
+        program);
 }
 
 } // namespace
@@ -28,6 +33,8 @@ void usage(const char* program)
 int main(int argc, char** argv)
 {
     sauce::fs::ArchiveIndexOptions options;
+    sauce::fs::ArchiveWatchOptions watch;
+    bool watch_mode = false;
 
     for (int index = 1; index < argc; ++index)
     {
@@ -41,7 +48,7 @@ int main(int argc, char** argv)
         {
             if (index + 1 >= argc)
             {
-                std::fprintf(stderr, "%s: --database needs a path\n", argv[0]);
+                sauce::fs::print_error("{}: --database needs a path\n", argv[0]);
                 return 2;
             }
             options.database = argv[++index];
@@ -51,19 +58,49 @@ int main(int argc, char** argv)
         {
             if (index + 1 >= argc)
             {
-                std::fprintf(stderr, "%s: --steam-root needs a path\n", argv[0]);
+                sauce::fs::print_error("{}: --steam-root needs a path\n", argv[0]);
                 return 2;
             }
             options.steam_roots.emplace_back(argv[++index]);
             continue;
         }
+        if (argument == "--watch")
+        {
+            watch_mode = true;
+            continue;
+        }
+        if (argument == "--debounce-ms")
+        {
+            if (index + 1 >= argc)
+            {
+                sauce::fs::print_error("{}: --debounce-ms needs a number\n", argv[0]);
+                return 2;
+            }
+            char* end = nullptr;
+            const char* text = argv[++index];
+            const unsigned long value = std::strtoul(text, &end, 10);
+            if (end == text || *end != '\0' || value > 3600000)
+            {
+                sauce::fs::print_error("{}: invalid --debounce-ms value: {}\n", argv[0], text);
+                return 2;
+            }
+            watch.debounce = std::chrono::milliseconds(value);
+            continue;
+        }
         if (!argument.empty() && argument[0] == '-')
         {
-            std::fprintf(stderr, "%s: unknown option: %s\n", argv[0], argument.c_str());
+            sauce::fs::print_error("{}: unknown option: {}\n", argv[0], argument);
             usage(argv[0]);
             return 2;
         }
         options.game_folders.emplace_back(argument);
+    }
+
+    if (watch_mode)
+    {
+        sauce::fs::ArchiveIndexResult result;
+        sauce::fs::ArchiveIndexWatcher watcher(options, watch);
+        return watcher.run(result) ? 0 : 1;
     }
 
     sauce::fs::ArchiveIndexResult result;

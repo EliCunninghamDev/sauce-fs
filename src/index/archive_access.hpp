@@ -146,8 +146,16 @@ public:
         std::string path;
         std::string mount_path;
         std::string stem;
+        /// `archive_type.name`: "vpk", "bsp-pak", "gma", or "gma-bin".
         std::string variant;
         std::string hash;
+        /// GMAD header fields; empty/default for other archive types.
+        std::string addon_name;
+        std::string addon_description;
+        std::string addon_author;
+        std::int32_t addon_version = 0;
+        std::uint64_t steamid64 = 0;
+        std::int64_t timestamp = 0;
     };
 
     static Result<std::shared_ptr<IndexDatabase>> open(const std::filesystem::path& database);
@@ -158,6 +166,12 @@ public:
 
     Result<std::vector<GameInfo>> games() const;
     Result<std::vector<ArchiveInfo>> archives() const;
+
+    /// Check whether another process (the index watcher) committed a newer
+    /// database snapshot. If so, reload metadata and drop decoded-file caches.
+    /// Returns true when the snapshot changed. Lookups call this implicitly,
+    /// so a long-lived mount sees updates without being restarted.
+    Result<bool> refresh() const;
 
     /// One archive. Paths are archive-internal, e.g. "materials/foo.vmt".
     Result<ProviderPtr> archive_provider(std::int64_t archive_id) const;

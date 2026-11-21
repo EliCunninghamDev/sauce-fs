@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <string>
@@ -18,6 +17,7 @@
 #include <fuse3/fuse.h>
 
 #include "core/volume.h"
+#include "util/format.hpp"
 
 namespace sauce::fs
 {
@@ -143,7 +143,7 @@ int mount(int argc, char** argv)
 {
     if (argc < 1)
     {
-        std::fprintf(stderr, "sauce-fs: mount point required\n");
+        sauce::fs::print_error("sauce-fs: mount point required\n");
         return 2;
     }
 

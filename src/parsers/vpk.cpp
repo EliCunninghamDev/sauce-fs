@@ -4,11 +4,12 @@
 #include "vpk.hpp"
 
 #include <cstdint>
-#include <cstdio>
 #include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <fmt/format.h>
 
 #include "bytes.hpp"
 
@@ -113,9 +114,7 @@ std::filesystem::path vpk_side_archive(const std::filesystem::path& directory_fi
     {
         stem.resize(stem.size() - 4);
     }
-    char suffix[16];
-    std::snprintf(suffix, sizeof(suffix), "_%03u.vpk", index);
-    return directory_file.parent_path() / (stem + suffix);
+    return directory_file.parent_path() / (stem + fmt::format("_{:03}.vpk", index));
 }
 
 bool parse_vpk(const std::filesystem::path& path, std::vector<ScannedEntry>& entries,
